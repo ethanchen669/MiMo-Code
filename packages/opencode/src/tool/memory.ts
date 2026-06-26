@@ -4,6 +4,11 @@ import { Memory } from "@/memory"
 import DESCRIPTION from "./memory.txt"
 import * as Tool from "./tool"
 
+// .meta({ type: "object" }) is REQUIRED on top-level zod objects with
+// nested-shape fields. Without it, the emitted JSON schema's nested nodes
+// have only anyOf, no type. M3 then stringifies the entire envelope,
+// producing {"operation": "{...}"} which fails zod parse. Same fix
+// as task.ts:111 and actor.ts.
 const parameters = z.object({
   operation: z.enum(["search"]).default("search").describe("Memory operation to perform"),
   query: z.string().describe("Search query (BM25 over markdown bodies)"),
@@ -17,7 +22,7 @@ const parameters = z.object({
     .optional()
     .describe("Filter by memory type (pinned, snapshot, learning, progress, free, ...)"),
   limit: z.number().optional().describe("Max results (default 10)"),
-})
+}).meta({ type: "object" })
 
 export const MemoryTool = Tool.define(
   "memory",

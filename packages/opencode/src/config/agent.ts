@@ -112,7 +112,12 @@ const normalize = (agent: z.infer<typeof Info>) => {
   }
   globalThis.Object.assign(permission, agent.permission)
 
-  return { ...agent, options, permission, steps: agent.steps ?? agent.maxSteps }
+  return {
+    ...agent,
+    options,
+    permission,
+    steps: agent.steps ?? agent.maxSteps,
+  }
 }
 
 export const Info = zod(AgentSchema).transform(normalize).meta({ ref: "AgentConfig" }) as unknown as z.ZodType<

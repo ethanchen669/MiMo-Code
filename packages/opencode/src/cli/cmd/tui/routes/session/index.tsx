@@ -305,6 +305,16 @@ export function Session() {
       }
       void exit()
     }
+    // Page up/down: keybinds are registered in config/keybinds.ts (defaults
+    // pageup/pagedown) but no listener existed in this view, so pressing
+    // them did nothing unless a dialog was open. Wire them up here.
+    if (keybind.match("messages_page_down", evt)) {
+      scroll.scrollBy(scroll.height)
+      evt.preventDefault()
+    } else if (keybind.match("messages_page_up", evt)) {
+      scroll.scrollBy(-scroll.height)
+      evt.preventDefault()
+    }
   })
 
   // Helper: Find next visible message boundary in direction

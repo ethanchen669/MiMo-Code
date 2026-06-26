@@ -338,8 +338,8 @@ export const layer = Layer.effect(
       })
 
       if (input.agent.toolAllowlist) {
-        const allowed = new Set(input.agent.toolAllowlist)
-        filtered = filtered.filter((tool) => tool.id === "invalid" || allowed.has(tool.id))
+        const allowed = new Set(input.agent.toolAllowlist.map((s) => s.toLowerCase()))
+        filtered = filtered.filter((tool) => tool.id === "invalid" || allowed.has(tool.id.toLowerCase()))
       }
 
       const cfg = yield* config.get()

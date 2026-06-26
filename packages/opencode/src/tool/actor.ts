@@ -227,17 +227,17 @@ function inferAction(o: Record<string, unknown>): "run" | "spawn" {
 
 // Recover a shell-mode actor call that arrived shaped like the JSON tool args
 // (no `script`): the Task-prior bare `{subagent_type, description, prompt}`, a
-// stringified `{operation:"..."}` envelope, or an already-nested `{operation:{}}`.
+// stringified `{operation:"..."}` envelope (M3 may emit this with bare keys or
+// wrapped in `<|object_ref_start|>` markers), or an already-nested `{operation:{}}`.
 // Returns the parsed shape for shellWrap to route to execute (which zod-validates
 // it), or undefined if rawArgs can't be lifted.
 export function recoverActorArgs(rawArgs: unknown): ActorShellArgs | undefined {
   if (rawArgs == null || typeof rawArgs !== "object") return undefined
   let obj = rawArgs as Record<string, unknown>
   if (typeof obj.operation === "string") {
-    try {
-      const inner = JSON.parse(obj.operation)
-      if (inner && typeof inner === "object" && !Array.isArray(inner)) obj = { operation: inner }
-    } catch {}
+    const cleaned = obj.operation.replace(/<\|object_ref_(?:start|end)\|>/g, "")
+    const inner = looseJsonParse(cleaned)
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) obj = { operation: inner }
   }
   if (obj.operation && typeof obj.operation === "object" && !Array.isArray(obj.operation))
     return { operation: obj.operation } as ActorShellArgs
@@ -260,6 +260,32 @@ export function recoverActorArgs(rawArgs: unknown): ActorShellArgs | undefined {
     return { operation: op } as ActorShellArgs
   }
   return undefined
+}
+
+// Best-effort parse of an M3-style JSON string. M3 commonly emits the operation
+// envelope as a JSON STRING with bare keys (`{action:"create",summary:"x"}`)
+// or as proper JSON; sometimes wrapped in `<|object_ref_start|>minimax<|object_ref_end|>`
+// marker tags. Try strict JSON.parse first, then a regex-based "loose" pass that
+// quotes bare keys and unquoted string values. Returns undefined on any failure
+// so the caller can fall through to other recovery paths (or return undefined).
+function looseJsonParse(s: string): unknown | undefined {
+  try {
+    return JSON.parse(s)
+  } catch {}
+  const quotedKeys = s.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":')
+  const quoted = quotedKeys.replace(
+    /:\s*([a-zA-Z一-鿿][^,}\]\n]*)/g,
+    (m, val: string) => {
+      const trimmed = val.trim()
+      if (/^(true|false|null|\d+(\.\d+)?|\[|\{)$/.test(trimmed)) return m
+      return `: "${trimmed.replace(/"/g, '\\"')}"`
+    },
+  )
+  try {
+    return JSON.parse(quoted)
+  } catch {
+    return undefined
+  }
 }
 
 export const ActorTool = Tool.define(
@@ -793,6 +819,7 @@ export const ActorTool = Tool.define(
         description: DESCRIPTION,
         parameters,
         execute: (input: z.infer<typeof parameters>, ctx: Tool.Context) => run(input, ctx).pipe(Effect.orDie),
+        recover: recoverActorArgs,
         shell: {
           description: SHELL_DESCRIPTION,
           parse: parseActorScript,

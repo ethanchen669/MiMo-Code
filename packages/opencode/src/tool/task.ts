@@ -160,18 +160,57 @@ function parseTaskScript(script: string): Effect.Effect<TaskOperation[], unknown
   })
 }
 
-// Recover a shell-mode task call shaped like the JSON args (no `script`):
-// a stringified/nested `operation`, or the common bare `{summary}` create.
-// Conservative — only the unambiguous create-from-summary is synthesized;
-// anything else passes through (nested) or returns undefined (→ teach JSON).
+// Best-effort parse of an M3-style JSON string. M3 commonly emits the operation
+// envelope as a JSON STRING with bare keys (`{action:"create",summary:"x"}`)
+// or as proper JSON; sometimes wrapped in `<|object_ref_start|>minimax<|object_ref_end|>`
+// marker tags. Try strict JSON.parse first, then a regex-based "loose" pass that
+// quotes bare keys and unquoted string values. Returns undefined on any failure
+// so the caller can fall through to other recovery paths (or return undefined).
+function looseJsonParse(s: string): unknown | undefined {
+  const tryStrict = () => {
+    try {
+      return JSON.parse(s)
+    } catch {
+      return undefined
+    }
+  }
+  const strict = tryStrict()
+  if (strict !== undefined) return strict
+  // Wrap unquoted keys: any {key: or ,key: preceded by optional whitespace.
+  // Matches `[a-zA-Z_][a-zA-Z0-9_]*` — standard JS identifier keys.
+  const quotedKeys = s.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":')
+  // Wrap unquoted string values: a colon followed by a non-number/keyword chunk
+  // ending at `,`, `}`, `]`, or newline. Skips true/false/null/numbers/brackets.
+  const quoted = quotedKeys.replace(
+    /:\s*([a-zA-Z一-鿿][^,}\]\n]*)/g,
+    (m, val: string) => {
+      const trimmed = val.trim()
+      if (/^(true|false|null|\d+(\.\d+)?|\[|\{)$/.test(trimmed)) return m
+      return `: "${trimmed.replace(/"/g, '\\"')}"`
+    },
+  )
+  try {
+    return JSON.parse(quoted)
+  } catch {
+    return undefined
+  }
+}
+
+// Recover a tool-mode task call shaped like the JSON args: a stringified/nested
+// `operation` (M3 may emit it as a JSON-encoded string with bare keys, optionally
+// wrapped in `<|object_ref_start|>minimax<|object_ref_end|>` marker tags), an
+// already-nested `{operation:{...}}`, or the common bare `{summary}` create.
+// Conservative on the synthesized path — only the unambiguous create-from-summary
+// is fabricated; anything else passes through (nested) or returns undefined.
 export function recoverTaskArgs(rawArgs: unknown): TaskOperation | undefined {
   if (rawArgs == null || typeof rawArgs !== "object") return undefined
   let obj = rawArgs as Record<string, unknown>
   if (typeof obj.operation === "string") {
-    try {
-      const inner = JSON.parse(obj.operation)
-      if (inner && typeof inner === "object" && !Array.isArray(inner)) obj = { operation: inner }
-    } catch {}
+    // Strip M3's <|object_ref_start|>minimax<|object_ref_end|> markers, then try
+    // strict JSON.parse, then fall back to a loose-key/loose-value parser.
+    const cleaned = obj.operation.replace(/<\|object_ref_(?:start|end)\|>/g, "")
+    const inner = looseJsonParse(cleaned)
+    if (inner && typeof inner === "object" && !Array.isArray(inner)) obj = { operation: inner }
   }
   if (obj.operation && typeof obj.operation === "object" && !Array.isArray(obj.operation))
     return { operation: obj.operation } as TaskOperation
@@ -446,6 +485,7 @@ export const TaskTool = Tool.define<typeof parameters, Metadata, TaskRegistry.Se
       parameters,
       execute: (args: z.infer<typeof parameters>, ctx: Tool.Context<Metadata>) =>
         run(args, ctx).pipe(Effect.orDie),
+      recover: recoverTaskArgs,
       shell: {
         description: SHELL_DESCRIPTION,
         parse: parseTaskScript,

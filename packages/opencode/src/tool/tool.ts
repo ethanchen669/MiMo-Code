@@ -41,6 +41,13 @@ export interface Def<Parameters extends z.ZodType = z.ZodType, M extends Metadat
   parameters: Parameters
   execute(args: z.infer<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>
   formatValidationError?(error: z.ZodError): string
+  // Optional top-level recovery for JSON-shape tool calls that arrive malformed
+  // (e.g. M3 emits `args.operation` as a JSON-encoded STRING instead of a nested
+  // object, or wraps it in `<|object_ref_start|>` markers). Returns the lifted
+  // args shape to be re-validated by zod, or undefined if rawArgs can't be
+  // rescued. Wired into wrap() so a recoverable call gets one zod retry before
+  // the agent sees a validation error.
+  recover?(rawArgs: unknown): z.infer<Parameters> | undefined
   shell?: {
     description: string
     parse(script: string): Effect.Effect<z.infer<Parameters>[], unknown>
@@ -107,8 +114,24 @@ function wrap<Parameters extends z.ZodType, Result extends Metadata>(
           ...(ctx.callID ? { "tool.call_id": ctx.callID } : {}),
         }
         return Effect.gen(function* () {
+          // Best-effort recovery for malformed JSON-shape calls: if zod parse
+          // fails AND the tool exposes a top-level `recover`, try lifting
+          // `args` through it once and re-parse the result. Only adopts the
+          // recovered value when the SECOND parse succeeds — bounds the blast
+          // radius to calls where recover demonstrably produces a valid shape.
+          const parseArgs = (raw: unknown): unknown => {
+            try {
+              return toolInfo.parameters.parse(raw)
+            } catch (err) {
+              if (toolInfo.recover && err instanceof z.ZodError) {
+                const lifted = toolInfo.recover(raw)
+                if (lifted !== undefined) return toolInfo.parameters.parse(lifted)
+              }
+              throw err
+            }
+          }
           yield* Effect.try({
-            try: () => toolInfo.parameters.parse(args),
+            try: () => parseArgs(args),
             catch: (error) => {
               // Bad arguments are always agent-recoverable: the model sees the
               // message and rewrites the call next turn. Mark it so the TUI
