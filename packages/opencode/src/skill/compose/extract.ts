@@ -4,11 +4,23 @@ import { Effect } from "effect"
 import matter from "gray-matter"
 import { AppFileSystem } from "@mimo-ai/shared/filesystem"
 import { Path as GlobalPath } from "@/global"
-import { InstallationLocal, InstallationVersion } from "@/installation/version"
+import { InstallationLocal } from "@/installation/version"
 import { Log } from "@/util"
 import { loadComposeBundle } from "./bundle.macro" with { type: "macro" }
 import { loadComposeBundle as loadComposeBundleDev } from "./bundle.macro"
 import { fallbackSanitization } from "@/config/markdown"
+
+/// Compose skills root is isolated behind this helper so that override
+/// mechanisms (env var, CLI flag, config) can be added here without
+/// touching call sites, and so future upstream changes to the version
+/// path can be merged with minimal conflict.
+///
+/// Env var `MIMOCODE_COMPOSE_DIR` (if set) wins; otherwise the stable
+/// `compose/latest/` directory is used. Per-version directories were a
+/// stale-cache reflex that broke every time the build timestamp changed.
+function composeSkillsRoot(): string {
+  return process.env.MIMOCODE_COMPOSE_DIR ?? path.join(GlobalPath.data, "compose", "latest")
+}
 
 /// Bun macros only resolve in the static import graph of an entry point.
 /// In dynamic import() chains (e.g. plugin tests), the macro is unavailable —
@@ -32,7 +44,7 @@ const log = Log.create({ service: "skill.compose" })
 export const extractComposeBundle = Effect.fn("Skill.extractComposeBundle")(function* (
   fsys: AppFileSystem.Interface,
 ) {
-  const root = path.join(GlobalPath.data, "compose", InstallationVersion)
+  const root = composeSkillsRoot()
   const marker = path.join(root, ".extracted")
 
   if (!InstallationLocal && (yield* fsys.existsSafe(marker))) return root
@@ -43,7 +55,7 @@ export const extractComposeBundle = Effect.fn("Skill.extractComposeBundle")(func
       yield* fsys.writeWithDirs(path.join(skillDir, relPath), content)
     }
   }
-  yield* fsys.writeWithDirs(marker, InstallationVersion)
+  yield* fsys.writeWithDirs(marker, "latest")
   log.info("extracted compose skills", { root })
   return root
 })
@@ -61,7 +73,7 @@ function parseSkillMeta(content: string) {
 }
 
 export function composeSkillsBlock(): string {
-  const root = path.join(GlobalPath.data, "compose", InstallationVersion)
+  const root = composeSkillsRoot()
   const entries: string[] = []
 
   for (const [skillName, files] of Object.entries(COMPOSE_BUNDLE)) {
