@@ -207,6 +207,28 @@ export const layer = Layer.effect(
               }),
               user,
             ),
+            // Compose is a coordinator, not an executor. Mirror plan mode's
+            // hardPermission pattern: keep `write`/`edit` in the schema
+            // (so M3 can write PLAN.md / PROGRESS.md / compose docs) but
+            // deny them outside the compose docs dir. `bash` is NOT in the
+            // schema at all (removed at tool_allowlist in mimicode.json).
+            // For code/test/review, M3 must use the actor tool to dispatch
+            // a subagent (e.g. `general`, `tdd-guide`, `code-reviewer`).
+            hardPermission: Permission.fromConfig({
+              edit: {
+                "*": "deny",
+                // Allow the configured compose docs dir (default `docs/compose`).
+                // Two flavors to cover both relative- and absolute- worktree:
+                "docs/compose/*.md": "allow",
+                "docs/compose/specs/*.md": "allow",
+                "docs/compose/plans/*.md": "allow",
+                "docs/compose/reports/*.md": "allow",
+                [path.join(Instance.worktree, "docs/compose/*.md")]: "allow",
+                [path.join(Instance.worktree, "docs/compose/specs/*.md")]: "allow",
+                [path.join(Instance.worktree, "docs/compose/plans/*.md")]: "allow",
+                [path.join(Instance.worktree, "docs/compose/reports/*.md")]: "allow",
+              },
+            }),
             mode: "primary",
             native: true,
           },
