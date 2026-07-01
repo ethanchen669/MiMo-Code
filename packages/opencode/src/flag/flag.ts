@@ -69,11 +69,11 @@ export const Flag = {
   MIMOCODE_INVALID_OUTPUT_CONTINUATION_LIMIT: number("MIMOCODE_INVALID_OUTPUT_CONTINUATION_LIMIT") ?? 2,
   MIMOCODE_TEXT_TOOL_CALL_RETRY_LIMIT: number("MIMOCODE_TEXT_TOOL_CALL_RETRY_LIMIT") ?? 2,
 
-  // Sliding-window n-gram repetition detection for streamed reasoning + text.
-  // An n-gram of size N appearing REPEAT_THRESHOLD times within the last
-  // WINDOW_TOKENS tokens triggers recovery (remind → replan → terminate).
-  MIMOCODE_TEXT_NGRAM_N: number("MIMOCODE_TEXT_NGRAM_N") ?? 6,
-  MIMOCODE_TEXT_REPEAT_THRESHOLD: number("MIMOCODE_TEXT_REPEAT_THRESHOLD") ?? 3,
+  // Consecutive-block repetition detection for streamed reasoning + text.
+  // A block of at least N tokens repeating REPEAT_THRESHOLD times consecutively
+  // within the last WINDOW_TOKENS tokens triggers recovery (remind → replan → terminate).
+  MIMOCODE_TEXT_NGRAM_N: number("MIMOCODE_TEXT_NGRAM_N") ?? 4,
+  MIMOCODE_TEXT_REPEAT_THRESHOLD: number("MIMOCODE_TEXT_REPEAT_THRESHOLD") ?? 20,
   MIMOCODE_TEXT_WINDOW_TOKENS: number("MIMOCODE_TEXT_WINDOW_TOKENS") ?? 500,
 
   // Caps applied to image attachments before a prompt is sent. Both default to
@@ -111,6 +111,13 @@ export const Flag = {
   MIMOCODE_SERVER_USERNAME: process.env["MIMOCODE_SERVER_USERNAME"],
   MIMOCODE_ENABLE_QUESTION_TOOL: truthy("MIMOCODE_ENABLE_QUESTION_TOOL"),
 
+  // Defaults to false. The edit tool does pure exact-string matching with
+  // explicit error signals. Set MIMOCODE_ENABLE_FUZZY_EDIT=true to opt into the
+  // legacy multi-stage fuzzy fallback chain (line-trimmed / block-anchor /
+  // whitespace-normalized / indentation-flexible / etc.) when old_string fails
+  // to match exactly.
+  MIMOCODE_ENABLE_FUZZY_EDIT: truthy("MIMOCODE_ENABLE_FUZZY_EDIT"),
+
   // Experimental
   MIMOCODE_EXPERIMENTAL,
   MIMOCODE_EXPERIMENTAL_FILEWATCHER: Config.boolean("MIMOCODE_EXPERIMENTAL_FILEWATCHER").pipe(
@@ -124,6 +131,21 @@ export const Flag = {
     copy === undefined ? process.platform === "win32" : truthy("MIMOCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT"),
   MIMOCODE_ENABLE_EXA: truthy("MIMOCODE_ENABLE_EXA") || MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_EXA"),
   MIMOCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS: number("MIMOCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
+  // Token-efficient post-cleanse: strip ANSI / fold \r progress bars / redact
+  // secrets / elide super-long lines from bash tool output before it is
+  // returned to the model. Only applies when the output fits inline — if the
+  // output spills to a truncation file, cleaning is skipped so the on-disk
+  // archive stays raw. Off by default. Set to 1/true to opt in.
+  MIMOCODE_EXPERIMENTAL_TOKEN_EFFICIENCY: truthy("MIMOCODE_EXPERIMENTAL_TOKEN_EFFICIENCY"),
+  // Tunables for the token-efficient post-cleanse pipeline (see
+  // src/tool/bash_token_efficient_pipeline.ts). Positive integers only;
+  // unset / non-positive values fall back to the documented defaults.
+  //   MAX_LINE_CHARS   threshold above which a single line is elided  (default 500)
+  //   LINE_HEAD_KEEP   chars kept from the head of an elided line     (default 160)
+  //   NEVER_WORSE_MARGIN  bytes the cleaned output must beat the raw  (default 0)
+  MIMOCODE_EXPERIMENTAL_TOKEN_EFFICIENCY_MAX_LINE_CHARS: number("MIMOCODE_EXPERIMENTAL_TOKEN_EFFICIENCY_MAX_LINE_CHARS") ?? 500,
+  MIMOCODE_EXPERIMENTAL_TOKEN_EFFICIENCY_LINE_HEAD_KEEP: number("MIMOCODE_EXPERIMENTAL_TOKEN_EFFICIENCY_LINE_HEAD_KEEP") ?? 160,
+  MIMOCODE_EXPERIMENTAL_TOKEN_EFFICIENCY_NEVER_WORSE_MARGIN: number("MIMOCODE_EXPERIMENTAL_TOKEN_EFFICIENCY_NEVER_WORSE_MARGIN") ?? 0,
   MIMOCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: number("MIMOCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"),
   MIMOCODE_EXPERIMENTAL_OXFMT: MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_OXFMT"),
   MIMOCODE_EXPERIMENTAL_LSP_TY: truthy("MIMOCODE_EXPERIMENTAL_LSP_TY"),
