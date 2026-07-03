@@ -6,6 +6,7 @@ import { Question } from "../question"
 import { Session } from "../session"
 import { MessageV2 } from "../session/message-v2"
 import { Provider } from "../provider"
+import { Agent } from "../agent/agent"
 import { Instance } from "../project/instance"
 import { type SessionID, MessageID, PartID } from "../session/schema"
 import ENTER_DESCRIPTION from "./plan-enter.txt"
@@ -68,7 +69,11 @@ export const PlanEnterTool = Tool.define(
             }
           }
 
-          const model = getLastModel(ctx.sessionID) ?? (yield* provider.defaultModel())
+          // Use the target agent's configured model, not the last message's model.
+          const agentInfo = yield* Agent.Service.use((svc) => svc.get("plan")).pipe(Effect.orDie)
+          const model = agentInfo.model
+            ? { providerID: agentInfo.model.providerID, modelID: agentInfo.model.modelID }
+            : getLastModel(ctx.sessionID) ?? (yield* provider.defaultModel())
 
           const msg: MessageV2.User = {
             id: MessageID.ascending(),
@@ -148,7 +153,12 @@ export const PlanExitTool = Tool.define(
             }
           }
 
-          const model = getLastModel(ctx.sessionID) ?? (yield* provider.defaultModel())
+          // Use the target agent's configured model, not the last message's model.
+          // getLastModel() returns plan's M3 — wrong for build which uses v2.5-pro.
+          const agentInfo = yield* Agent.Service.use((svc) => svc.get("build")).pipe(Effect.orDie)
+          const model = agentInfo.model
+            ? { providerID: agentInfo.model.providerID, modelID: agentInfo.model.modelID }
+            : getLastModel(ctx.sessionID) ?? (yield* provider.defaultModel())
 
           const msg: MessageV2.User = {
             id: MessageID.ascending(),

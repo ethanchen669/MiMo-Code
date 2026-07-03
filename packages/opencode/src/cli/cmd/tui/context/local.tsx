@@ -75,17 +75,40 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               duration: 3000,
             })
           setAgentStore("current", name)
+          // Sync model to the new agent's configured default (best-effort)
+          try {
+            const nextAgent = sync.data.agent.find((x) => x.name === name)
+            if (nextAgent?.model) {
+              const m = typeof nextAgent.model === "string"
+                ? parseModel(nextAgent.model)
+                : { providerID: nextAgent.model.providerID, modelID: nextAgent.model.modelID }
+              if (isModelValid(m)) {
+                setModelStore("model", name, m)
+              }
+            }
+          } catch {}
         },
         move(direction: 1 | -1) {
-          batch(() => {
-            const current = this.current()
-            if (!current) return
-            let next = agents().findIndex((x) => x.name === current.name) + direction
-            if (next < 0) next = agents().length - 1
-            if (next >= agents().length) next = 0
-            const value = agents()[next]
-            setAgentStore("current", value.name)
-          })
+          const current = this.current()
+          if (!current) return
+          let next = agents().findIndex((x) => x.name === current.name) + direction
+          if (next < 0) next = agents().length - 1
+          if (next >= agents().length) next = 0
+          const value = agents()[next]
+          // Update agent first — this is the critical path for Tab switching
+          setAgentStore("current", value.name)
+          // Sync model to the new agent's default (best-effort, never blocks the switch)
+          try {
+            const nextAgent = sync.data.agent.find((x) => x.name === value.name)
+            if (nextAgent?.model) {
+              const m = typeof nextAgent.model === "string"
+                ? parseModel(nextAgent.model)
+                : { providerID: nextAgent.model.providerID, modelID: nextAgent.model.modelID }
+              if (isModelValid(m)) {
+                setModelStore("model", value.name, m)
+              }
+            }
+          } catch {}
         },
         color(name: string) {
           const index = visibleAgents().findIndex((x) => x.name === name)

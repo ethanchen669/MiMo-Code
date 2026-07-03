@@ -1552,6 +1552,15 @@ export function Prompt(props: PromptProps) {
                     return
                   }
                 }
+                // Allow Shift+Tab to cycle to the previous agent even while
+                // ghost is active, so users have a reliable escape hatch to
+                // switch modes without first dismissing the ghost.
+                if (ghost() && store.mode === "normal" && input.plainText === "" && e.name === "tab" && e.shift) {
+                  command.keybinds(true)
+                  local.agent.move(-1)
+                  e.preventDefault()
+                  return
+                }
                 if (store.mode === "normal") autocomplete.onKeyDown(e)
                 if (!autocomplete.visible) {
                   if (
