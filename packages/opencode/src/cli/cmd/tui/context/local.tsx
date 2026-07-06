@@ -75,18 +75,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               duration: 3000,
             })
           setAgentStore("current", name)
-          // Sync model to the new agent's configured default (best-effort)
-          try {
-            const nextAgent = sync.data.agent.find((x) => x.name === name)
-            if (nextAgent?.model) {
-              const m = typeof nextAgent.model === "string"
-                ? parseModel(nextAgent.model)
-                : { providerID: nextAgent.model.providerID, modelID: nextAgent.model.modelID }
-              if (isModelValid(m)) {
-                setModelStore("model", name, m)
-              }
-            }
-          } catch {}
         },
         move(direction: 1 | -1) {
           const current = this.current()
@@ -97,18 +85,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const value = agents()[next]
           // Update agent first — this is the critical path for Tab switching
           setAgentStore("current", value.name)
-          // Sync model to the new agent's default (best-effort, never blocks the switch)
-          try {
-            const nextAgent = sync.data.agent.find((x) => x.name === value.name)
-            if (nextAgent?.model) {
-              const m = typeof nextAgent.model === "string"
-                ? parseModel(nextAgent.model)
-                : { providerID: nextAgent.model.providerID, modelID: nextAgent.model.modelID }
-              if (isModelValid(m)) {
-                setModelStore("model", value.name, m)
-              }
-            }
-          } catch {}
         },
         color(name: string) {
           const index = visibleAgents().findIndex((x) => x.name === name)

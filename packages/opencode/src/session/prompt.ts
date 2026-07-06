@@ -521,7 +521,7 @@ export const layer = Layer.effect(
               id: PartID.ascending(),
               messageID: userMsg.info.id,
               sessionID: userMsg.info.sessionID,
-              type: "text",
+              type: "text" as const,
               text: PROMPT_SECURITY,
               synthetic: true,
             }

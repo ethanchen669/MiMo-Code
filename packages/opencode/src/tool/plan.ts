@@ -25,6 +25,7 @@ export const PlanEnterTool = Tool.define(
     const session = yield* Session.Service
     const question = yield* Question.Service
     const provider = yield* Provider.Service
+    const agentSvc = yield* Agent.Service
 
     return {
       description: ENTER_DESCRIPTION,
@@ -70,7 +71,7 @@ export const PlanEnterTool = Tool.define(
           }
 
           // Use the target agent's configured model, not the last message's model.
-          const agentInfo = yield* Agent.Service.use((svc) => svc.get("plan")).pipe(Effect.orDie)
+          const agentInfo = yield* agentSvc.get("plan")
           const model = agentInfo.model
             ? { providerID: agentInfo.model.providerID, modelID: agentInfo.model.modelID }
             : getLastModel(ctx.sessionID) ?? (yield* provider.defaultModel())
@@ -109,6 +110,7 @@ export const PlanExitTool = Tool.define(
     const session = yield* Session.Service
     const question = yield* Question.Service
     const provider = yield* Provider.Service
+    const agentSvc = yield* Agent.Service
 
     return {
       description: EXIT_DESCRIPTION,
@@ -155,7 +157,7 @@ export const PlanExitTool = Tool.define(
 
           // Use the target agent's configured model, not the last message's model.
           // getLastModel() returns plan's M3 — wrong for build which uses v2.5-pro.
-          const agentInfo = yield* Agent.Service.use((svc) => svc.get("build")).pipe(Effect.orDie)
+          const agentInfo = yield* agentSvc.get("build")
           const model = agentInfo.model
             ? { providerID: agentInfo.model.providerID, modelID: agentInfo.model.modelID }
             : getLastModel(ctx.sessionID) ?? (yield* provider.defaultModel())
