@@ -232,6 +232,31 @@ export const layer = Layer.effect(
             mode: "primary",
             native: true,
           },
+          security: {
+            name: "security",
+            color: "#e85d75",
+            description: "Security analysis mode. Dispatches to security-reviewer and other security specialists for vulnerability analysis, penetration testing, and threat modeling.",
+            options: {},
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                question: "allow",
+              }),
+              user,
+            ),
+            hardPermission: Permission.fromConfig({
+              edit: {
+                "*": "deny",
+                "docs/security/*.md": "allow",
+                "docs/security/audits/*.md": "allow",
+                "docs/security/threats/*.md": "allow",
+                "security-audit-*.md": "allow",
+                "threat-model-*.md": "allow",
+              },
+            }),
+            mode: "primary",
+            native: true,
+          },
           general: {
             name: "general",
             color: "#aac4e1",
@@ -473,6 +498,7 @@ export const layer = Layer.effect(
               [(x) => x.name === "build", "desc"],
               [(x) => x.name === "plan", "desc"],
               [(x) => x.name === "compose", "desc"],
+              [(x) => x.name === "security", "desc"],
               [(x) => x.name === "max", "desc"],
               [(x) => x.name, "asc"],
             ),
