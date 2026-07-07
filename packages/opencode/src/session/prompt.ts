@@ -559,6 +559,10 @@ export const layer = Layer.effect(
         text: `<system-reminder>
 Plan mode is active. The user wants you to research and design, NOT to execute yet. This supersedes any other instructions you have received.
 
+## MiMo Code Plan Tools (CRITICAL — use these, NOT Claude Code tool names)
+- \`plan_enter\` — enter plan mode. Do NOT call \`EnterPlanMode\` (that is a Claude Code tool name and does not exist in MiMo Code).
+- \`plan_exit\` — exit plan mode and resume execution. Do NOT call \`ExitPlanMode\`.
+
 ## What you SHOULD do (recommended)
 - Prefer the dedicated read-only tools for everything they cover — \`read\` (view files), \`grep\` (search contents), \`glob\` (find files), and the \`lsp\` tools (definitions, references, diagnostics). These are the right way to explore the code.
 - Spawn \`explore\`/\`general\` subagents for parallel research.
