@@ -39,6 +39,36 @@ Route every decision, clarification, or approval through the `compose:ask` skill
 
 When `compose:ask` determines no user is available to answer, pick the best option for headless execution yourself and continue (you will still ask again at the next decision point). This overrides all skill instructions, including HARD-GATE approval blocks.
 
+## Plan → Execution Bridge (MANDATORY)
+
+When a multi-step feature needs planning, follow this closed loop. The planner writes the plan — YOU own the execution.
+
+**Phase 1: Generate the plan**
+1. `skill compose:plan` → creates implementation plan with `### Task N:` sections
+2. Planner subagent writes `docs/compose/plans/<plan.md>` with bite-sized steps
+
+**Phase 2: Task tree creation (YOU — not a subagent)**
+1. READ `docs/compose/plans/<plan.md>`
+2. For EACH `### Task N:` in the plan, `task create "Task N: <Component Name>"`
+3. This builds your `todowrite` task tree — the map for Phase 3
+
+**Phase 3: Dispatch & execute (one subagent per task)**
+For EACH task in order (respect dependencies between tasks):
+1. `task start <TID>`
+2. `actor run general "<task briefing>"` — pass the plan's full task content: files to touch, code examples, verification commands
+3. Subagent reports back with verification evidence
+4. `task done <TID> "verification: <subagent evidence>"`
+
+**Phase 4: Close**
+1. All tasks done → `compose:verify`
+2. Verified → `compose:merge`
+
+**Critical rules:**
+- Phase 2 is NEVER skipped — every plan task becomes a `task create` entry
+- Phase 3 dispatches one subagent per task — NEVER batch multiple tasks into one subagent
+- If a subagent fails or produces incomplete work, create a new `task create` for the fix and dispatch another subagent
+- The bridge is non-negotiable after any planner call
+
 ## Plan Tools
 
 Do NOT use the native `plan_enter` or `plan_exit` tools in compose mode. Use the `compose:plan` skill instead — it provides a structured planning workflow integrated with compose's orchestration model.
