@@ -70,7 +70,7 @@ function normalizeMessages(
 ): ModelMessage[] {
   // Anthropic rejects messages with empty content - filter out empty string messages
   // and remove empty text/reasoning parts from array content
-  if (model.api.npm === "@ai-sdk/anthropic" || model.api.npm === "@ai-sdk/amazon-bedrock") {
+  if (model.api.npm === "@ai-sdk/anthropic" || model.api.npm === "@ai-sdk/amazon-bedrock" || model.api.npm === "@ai-sdk/openai-compatible") {
     msgs = msgs
       .map((msg) => {
         if (typeof msg.content === "string") {
@@ -88,6 +88,23 @@ function normalizeMessages(
         return { ...msg, content: filtered }
       })
       .filter((msg): msg is ModelMessage => msg !== undefined && msg.content !== "")
+  }
+
+  // DeepSeek (via @ai-sdk/openai-compatible) rejects content: "" in assistant
+  // messages with tool calls — the converter passes through an empty string when
+  // no text/reasoning parts are present. Inject a zero-width-space placeholder.
+  if (model.api.npm === "@ai-sdk/openai-compatible") {
+    msgs = msgs.map((msg) => {
+      if (msg.role !== "assistant" || !Array.isArray(msg.content)) return msg
+      const hasToolCalls = msg.content.some((p) => p.type === "tool-call")
+      const hasText = msg.content.some(
+        (p) => (p.type === "text" || p.type === "reasoning") && p.text !== "",
+      )
+      if (hasToolCalls && !hasText) {
+        return { ...msg, content: [{ type: "text" as const, text: "\u200B" }, ...msg.content] }
+      }
+      return msg
+    })
   }
 
   if (model.api.id.includes("claude")) {
