@@ -90,10 +90,12 @@ function normalizeMessages(
       .filter((msg): msg is ModelMessage => msg !== undefined && msg.content !== "")
   }
 
-  // DeepSeek (via @ai-sdk/openai-compatible) rejects content: "" in assistant
+  // Openai-compatible + Anthropic-based providers reject content: "" in assistant
   // messages with tool calls — the converter passes through an empty string when
   // no text/reasoning parts are present. Inject a zero-width-space placeholder.
-  if (model.api.npm === "@ai-sdk/openai-compatible") {
+  // This is universal: safe for Anthropic (allows text alongside tool_use),
+  // required for DeepSeek (rejects empty content), harmless for all others.
+  if (model.api.npm === "@ai-sdk/openai-compatible" || model.api.npm === "@ai-sdk/anthropic") {
     msgs = msgs.map((msg) => {
       if (msg.role !== "assistant" || !Array.isArray(msg.content)) return msg
       const hasToolCalls = msg.content.some((p) => p.type === "tool-call")
