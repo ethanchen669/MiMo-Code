@@ -30,6 +30,7 @@ import BUILD_SWITCH from "../session/prompt/build-switch.txt"
 import MAX_STEPS from "../session/prompt/max-steps.txt"
 import PROMPT_COMPOSE from "../session/prompt/compose.txt"
 import PROMPT_SECURITY from "../session/prompt/security.txt"
+import PROMPT_BUILD from "../session/prompt/build.txt"
 import {
   RECOVERY_PROMPT_MILD,
   RECOVERY_PROMPT_STRONG,
@@ -526,6 +527,28 @@ export const layer = Layer.effect(
               synthetic: true,
             }
             existingParts.unshift(securityPart)
+          }
+        }
+      }
+
+      // Build mode: inject build prompt when agent is "build"
+      if (input.agent.name === "build") {
+        const userMsg = input.messages.findLast((msg) => msg.info.role === "user")
+        if (userMsg) {
+          const existingParts = userMsg.parts
+          const hasBuildPrompt = existingParts.some(
+            (p) => p.type === "text" && typeof p.text === "string" && p.text.includes("Build Agent")
+          )
+          if (!hasBuildPrompt) {
+            const buildPart = {
+              id: PartID.ascending(),
+              messageID: userMsg.info.id,
+              sessionID: userMsg.info.sessionID,
+              type: "text" as const,
+              text: PROMPT_BUILD,
+              synthetic: true,
+            }
+            existingParts.unshift(buildPart)
           }
         }
       }
