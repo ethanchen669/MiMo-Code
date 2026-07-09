@@ -60,6 +60,8 @@ import { useDialog } from "../../ui/dialog"
 import { DialogMessage } from "./dialog-message"
 import type { PromptInfo } from "../../component/prompt/history"
 import { DialogConfirm } from "@tui/ui/dialog-confirm"
+import { DialogAlert } from "@tui/ui/dialog-alert"
+import { DialogPrompt } from "@tui/ui/dialog-prompt"
 import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
@@ -124,6 +126,25 @@ function use() {
   return ctx
 }
 
+function SidebarToggleButton(props: { visible: boolean; onToggle: () => void }) {
+  const { theme } = useTheme()
+  const [hover, setHover] = createSignal(false)
+  return (
+    <box
+      width={3}
+      height="100%"
+      justifyContent="flex-start"
+      alignItems="center"
+      backgroundColor={hover() ? theme.backgroundElement : undefined}
+      onMouseOver={() => setHover(true)}
+      onMouseOut={() => setHover(false)}
+      onMouseUp={() => props.onToggle()}
+    >
+      <text fg={hover() ? theme.text : theme.textMuted}>{props.visible ? "▶" : "◀"}</text>
+    </box>
+  )
+}
+
 export function Session() {
   const route = useRouteData("session")
   const fullRoute = useRoute()
@@ -138,12 +159,20 @@ export function Session() {
   const session = createMemo(() => sync.session.get(route.sessionID))
   const currentAgentID = useCurrentAgentID()
   const actors = createMemo(() => sync.data.actor[route.sessionID] ?? [])
-  const messages = createMemo(() => sync.data.message[route.sessionID]?.[currentAgentID()] ?? [])
+  const messages = createMemo(() => {
+    const buckets = sync.data.message[route.sessionID]
+    const agentID = currentAgentID()
+    // A peer child runs its own turns under agentID == its own sessionID
+    // (spawn.ts), so its messages bucket under [sessionID] not ["main"]. When
+    // attaching to such a child at "main", fall back to its own-id bucket so the
+    // full session renders instead of an empty "main" view.
+    if (agentID === "main" && !buckets?.["main"]?.length) return buckets?.[route.sessionID] ?? []
+    return buckets?.[agentID] ?? []
+  })
   const permissions = createMemo(() => sync.data.permission[route.sessionID] ?? [])
   const questions = createMemo(() => sync.data.question[route.sessionID] ?? [])
   const visible = createMemo(
     () =>
-      !session()?.parentID &&
       currentAgentID() === "main" &&
       permissions().length === 0 &&
       questions().length === 0,
@@ -193,7 +222,6 @@ export function Session() {
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
-    if (session()?.parentID) return false
     if (currentAgentID() !== "main") return false
     if (sidebarOpen()) return true
     if (sidebar() === "auto" && wide()) return true
@@ -302,7 +330,7 @@ export function Session() {
   })
 
   useKeyboard((evt) => {
-    if (!session()?.parentID && currentAgentID() === "main") return
+    if (currentAgentID() === "main") return
     if (keybind.match("app_exit", evt)) {
       const status = sync.data.session_status?.[route.sessionID]
       if (status && status.type !== "idle") {
@@ -330,6 +358,7 @@ export function Session() {
     const scrollTop = scroll.y
 
     // Get visible messages sorted by position, filtering for valid non-synthetic, non-ignored content
+    // (a synthetic cron-origin text part is also visible — see the clock-row branch in UserMessage)
     const visibleMessages = children
       .filter((c) => {
         if (!c.id) return false
@@ -340,7 +369,14 @@ export function Session() {
         const parts = sync.data.part[message.id]
         if (!parts || !Array.isArray(parts)) return false
 
-        return parts.some((part) => part && part.type === "text" && !part.synthetic && !part.ignored)
+        return parts.some(
+          (part) =>
+            part &&
+            part.type === "text" &&
+            !part.ignored &&
+            (!part.synthetic ||
+              (part.metadata as { origin?: { kind?: string } } | undefined)?.origin?.kind === "cron"),
+        )
       })
       .sort((a, b) => a.y - b.y)
 
@@ -549,6 +585,32 @@ export function Session() {
           providerID: selectedModel.providerID,
         })
         dialog.clear()
+      },
+    },
+    {
+      title: t("tui.command.session.ask.title"),
+      description: t("tui.command.session.ask.description"),
+      value: "session.ask",
+      category: "session",
+      slash: {
+        name: "btw",
+      },
+      onSelect: async (dialog) => {
+        const question = await DialogPrompt.show(dialog, "/btw", {
+          placeholder: t("tui.command.session.ask.placeholder"),
+        })
+        if (!question || !question.trim()) return
+        const res = await sdk.client.session
+          .ask({ sessionID: route.sessionID, question: question.trim() })
+          .catch((error) => {
+            toast.show({
+              message: error instanceof Error ? error.message : "Failed to ask side question",
+              variant: "error",
+            })
+            return undefined
+          })
+        if (!res) return
+        await DialogAlert.show(dialog, "/btw", res.data?.answer ?? "(no answer)")
       },
     },
     {
@@ -835,7 +897,12 @@ export function Session() {
           if (!parts || !Array.isArray(parts)) continue
 
           const hasValidTextPart = parts.some(
-            (part) => part && part.type === "text" && !part.synthetic && !part.ignored,
+            (part) =>
+              part &&
+              part.type === "text" &&
+              !part.ignored &&
+              (!part.synthetic ||
+                (part.metadata as { origin?: { kind?: string } } | undefined)?.origin?.kind === "cron"),
           )
 
           if (hasValidTextPart) {
@@ -1129,6 +1196,7 @@ export function Session() {
               />
             }
           >
+          
           <Show when={session()}>
             <scrollbox
               ref={(r) => (scroll = r)}
@@ -1252,7 +1320,7 @@ export function Session() {
               <Show when={permissions().length === 0 && questions().length > 0}>
                 <QuestionPrompt request={questions()[0]} />
               </Show>
-              <Show when={session()?.parentID || currentAgentID() !== "main"}>
+              <Show when={currentAgentID() !== "main"}>
                 <SubagentFooter />
               </Show>
               <Show when={visible()}>
@@ -1282,6 +1350,18 @@ export function Session() {
           </Show>
           <Toast />
         </box>
+        <Show when={wide() || sidebarVisible()}>
+          <SidebarToggleButton
+            visible={sidebarVisible()}
+            onToggle={() => {
+              batch(() => {
+                const isVisible = sidebarVisible()
+                setSidebar(() => (isVisible ? "hide" : "auto"))
+                setSidebarOpen(!isVisible)
+              })
+            }}
+          />
+        </Show>
         <Show when={sidebarVisible()}>
           <Switch>
             <Match when={wide()}>
@@ -1327,6 +1407,18 @@ function UserMessage(props: {
   const ctx = use()
   const local = useLocal()
   const text = createMemo(() => props.parts.flatMap((x) => (x.type === "text" && !x.synthetic ? [x] : []))[0])
+  // Cron-fired synthetic prompts: surface as a one-line clock row instead of
+  // hiding them. Backend (cron-bridge.ts:onFire) stores the ISO timestamp at
+  // `part.metadata.origin.firedAt`; we render that directly rather than
+  // parsing the prefix in part.text.
+  const cronFire = createMemo(() => {
+    return props.parts.flatMap((x) => {
+      if (x.type !== "text" || !x.synthetic) return []
+      const origin = (x.metadata as { origin?: { kind?: string; firedAt?: string; kindOfTask?: string } } | undefined)?.origin
+      if (origin?.kind !== "cron") return []
+      return [{ part: x, firedAt: origin.firedAt, kindOfTask: origin.kindOfTask ?? "cron" }]
+    })[0]
+  })
   const files = createMemo(() => props.parts.flatMap((x) => (x.type === "file" ? [x] : [])))
   const { theme } = useTheme()
   const [hover, setHover] = createSignal(false)
@@ -1337,6 +1429,35 @@ function UserMessage(props: {
 
   return (
     <>
+      <Show when={cronFire()}>
+        {(fire) => {
+          // Strip the "[cron fire @ ISO] " prefix from part.text to get the
+          // original prompt body. The backend prepends it for the model; the
+          // TUI renders the timestamp separately as a styled badge, so the
+          // duplication would be visual noise here.
+          const prompt = createMemo(() => {
+            const raw = fire().part.type === "text" ? fire().part.text : ""
+            return raw.replace(/^\[cron fire @ [^\]]+\]\s*/, "")
+          })
+          const stamp = createMemo(() => {
+            const iso = fire().firedAt
+            if (!iso) return ""
+            // ISO ends with `Z` (UTC). Show local HH:MM:SS for TUI readability,
+            // matching how `ctx.showTimestamps()` renders user-message times.
+            const date = new Date(iso)
+            return Number.isNaN(date.getTime()) ? iso : Locale.todayTimeOrDateTime(date.getTime())
+          })
+          return (
+            <box id={props.message.id} marginTop={props.index === 0 ? 0 : 1} paddingLeft={2} flexDirection="row" gap={1}>
+              <text fg={theme.textMuted}>
+                <span style={{ bg: theme.backgroundElement, fg: theme.primary, bold: true }}> 🕒 cron fire </span>
+                <span style={{ fg: theme.textMuted }}> {stamp()} </span>
+                <span style={{ fg: theme.text }}>— {prompt()}</span>
+              </text>
+            </box>
+          )
+        }}
+      </Show>
       <Show when={text()}>
         <box
           id={props.message.id}
@@ -2740,8 +2861,44 @@ function Task(props: ToolProps<typeof ActorTool>) {
     return (raw?.operation ?? raw) as Partial<{ description: string; subagent_type: string }>
   })
 
-  const targetSession = createMemo(() => props.metadata.sessionId as string | undefined)
-  const targetBucket = createMemo(() => (props.metadata.actorId as string | undefined) ?? "main")
+  const inputActorId = createMemo(() => {
+    const raw = props.input as Partial<{ operation: { actor_id: string }; actor_id: string }>
+    return raw?.operation?.actor_id ?? raw?.actor_id
+  })
+
+  const inputAction = createMemo(() => {
+    const raw = props.input as Partial<{ operation: { action: string }; action: string }>
+    return raw?.operation?.action ?? raw?.action
+  })
+
+  const actorEntry = createMemo(() => {
+    const actorId = (props.metadata.actorId as string | undefined) ?? inputActorId()
+    if (!actorId) return undefined
+    const actors = sync.data.actor[props.part.sessionID]
+    if (!actors) return undefined
+    return actors.find((a) => a.actor_id === actorId)
+  })
+
+  const targetSession = createMemo(() => {
+    const fromMeta = props.metadata.sessionId as string | undefined
+    if (fromMeta) return fromMeta
+    return actorEntry()?.session_id
+  })
+
+  const targetBucket = createMemo(() => {
+    const fromMeta = props.metadata.actorId as string | undefined
+    if (fromMeta) return fromMeta
+    return inputActorId() ?? "main"
+  })
+
+  const actorStatus = createMemo(() => {
+    return actorEntry()?.status
+  })
+
+  const resolvedDescription = createMemo(() => {
+    if (input().description) return input().description
+    return actorEntry()?.description
+  })
 
   createEffect(() => {
     const session = targetSession()
@@ -2764,7 +2921,14 @@ function Task(props: ToolProps<typeof ActorTool>) {
     tools().findLast((x) => (x.state.status === "running" || x.state.status === "completed") && x.state.title),
   )
 
-  const isRunning = createMemo(() => props.part.state.status === "running")
+  const isRunning = createMemo(() => {
+    if (props.part.state.status === "running") return true
+    if (props.part.state.status === "completed") {
+      const status = actorStatus()
+      return status === "running" || status === "pending"
+    }
+    return false
+  })
 
   const duration = createMemo(() => {
     const first = messages().find((x) => x.role === "user")?.time.created
@@ -2774,11 +2938,33 @@ function Task(props: ToolProps<typeof ActorTool>) {
   })
 
   const content = createMemo(() => {
-    if (!input().description) return ""
-    let content = [`${Locale.titlecase(input().subagent_type ?? "General")} Task — ${input().description}`]
+    const desc = resolvedDescription()
+    if (!desc) return ""
+
+    const action = inputAction()
+    const status = actorStatus()
+    const agent = Locale.titlecase(input().subagent_type ?? actorEntry()?.agent ?? "General")
+
+    let header: string
+    if (action === "cancel") {
+      const label = props.part.state.status === "running" ? "Cancelling" : "Cancelled"
+      header = `${label} — ${desc}`
+    } else if (action === "wait") {
+      const label = props.part.state.status === "completed" ? "Waited for" : "Waiting for"
+      header = `${label} — ${desc}`
+    } else if (action === "spawn") {
+      header = `Background ${agent} Task — ${desc}`
+    } else {
+      header = `${agent} Task — ${desc}`
+    }
+
+    if (status === "cancelled" && action !== "cancel") {
+      header += " (cancelled)"
+    }
+
+    let content = [header]
 
     if (isRunning() && tools().length > 0) {
-      // content[0] += ` · ${tools().length} toolcalls`
       if (current()) {
         const state = current()!.state
         const title = state.status === "running" || state.status === "completed" ? state.title : undefined
@@ -2786,7 +2972,7 @@ function Task(props: ToolProps<typeof ActorTool>) {
       } else content.push(`↳ ${tools().length} toolcalls`)
     }
 
-    if (props.part.state.status === "completed") {
+    if (props.part.state.status === "completed" && !isRunning()) {
       content.push(`└ ${tools().length} toolcalls · ${Locale.duration(duration())}`)
     }
 
@@ -2797,7 +2983,7 @@ function Task(props: ToolProps<typeof ActorTool>) {
     <InlineTool
       icon="│"
       spinner={isRunning()}
-      complete={input().description}
+      complete={resolvedDescription()}
       pending="Delegating..."
       part={props.part}
       onClick={() => {
