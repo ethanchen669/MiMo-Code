@@ -44,6 +44,28 @@ When a multi-step feature needs planning, follow this closed loop. The planner w
 1. `skill compose:plan` → creates implementation plan with `### Task N:` sections
 2. Planner subagent writes `docs/compose/plans/<plan.md>` with bite-sized steps
 
+**Phase 1.5: Build Context Chain（上下文传递链 — MANDATORY）**
+
+Upstream reasoning is NOT automatically shared between subagents — you are the bridge.
+
+**Structured output:** Each reasoning subagent (brainstormer, ask-analyzer, planner, architect) is dispatched with an `output_schema` (JSON Schema). The subagent MUST return structured JSON meeting the schema — goal, design_directions, constraints, open_questions, raw_reasoning.
+
+**Disk ledger:** After each reasoning subagent completes, record its structured output (all non-raw fields) to `~/.local/share/mimocode/sessions/<current_session_id>/context-ledger.json`. One ledger per compose session — no cross-session pollution, no unbounded growth. This survives restarts and compaction.
+
+**Injection:** Before dispatching ANY downstream subagent (planner, architect, implementer, reviewer), embed every completed upstream subagent's structured fields in the dispatch prompt under `## Upstream reasoning context` → `### <subagent_name>` → Key Decisions, Constraints, Open Questions. Only inject non-raw structured fields — never inject full raw reasoning into the prompt.
+
+**Validation gate:** Before dispatch, verify:
+1. The dispatch prompt contains `## Upstream reasoning context` block (string match)2. Each completed dependency subagent has a non-empty `### <name>` section in that blockEither failure → abort dispatch, fix the gap FIRST. This is NOT LLM self-certification — verify the actual prompt string.
+
+**Back-channel:** If a downstream subagent needs full raw reasoning from an upstream subagent, it may reply: `BACKCHANNEL: request raw_reasoning of <name>`. Read the raw field from the disk ledger and re-inject it into a re-dispatched prompt.
+
+**Chain topology:**
+```
+brainstormer + ask-analyzer（parallel）
+         │
+         └→ planner → architect → implementer(s) → reviewer(s)
+```
+
 **Phase 2: Task tree creation (YOU — not a subagent)**
 1. READ `docs/compose/plans/<plan.md>`
 2. For EACH `### Task N:` in the plan, `task create "Task N: <Component Name>"`
