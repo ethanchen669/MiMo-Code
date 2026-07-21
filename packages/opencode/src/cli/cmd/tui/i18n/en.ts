@@ -41,21 +41,24 @@ export const dict: Record<string, string> = {
 
   // Tips
   "tui.tips.label": "Tip",
-  "tui.tips.plain_terminal": "We recommend using iTerm or the VS Code terminal",
+  "tui.tips.plain_terminal": "The default Mac terminal has rendering limitations. Please use iTerm2 or the VS Code terminal",
   "tui.tips.attach_file": "Type {highlight}@{/highlight} followed by a filename to fuzzy search and attach files",
   "tui.tips.shell_prefix":
     "Start a message with {highlight}!{/highlight} to run shell commands directly (e.g., {highlight}!ls -la{/highlight})",
   "tui.tips.tab_agent":
+    "Press {highlight}Tab{/highlight} or {highlight}Shift+Tab{/highlight} to cycle between Build, Plan, and Compose agents",
+  "tui.tips.tab_agent_orchestrator":
     "Press {highlight}Tab{/highlight} or {highlight}Shift+Tab{/highlight} to cycle between Build, Plan, Compose, and Orchestrator agents",
   "tui.tips.theme_mode":
     "Run {highlight}/dark{/highlight} for dark mode or {highlight}/light{/highlight} for light mode",
   "tui.tips.doc": "Run {highlight}/doc{/highlight} to open the user documentation",
   "tui.tips.free_models": "Free models are available for a limited time — try them now!",
+  "tui.tips.multi_skills":
+    "Combine multiple {highlight}/skill-name{/highlight} triggers in a single message to use several skills together",
   "tui.tips.background":
     "Run {highlight}/background{/highlight} to set a custom image as your home background",
   "tui.tips.undo": "Use {highlight}/undo{/highlight} to revert the last message and file changes",
   "tui.tips.redo": "Use {highlight}/redo{/highlight} to restore previously undone messages and file changes",
-  "tui.tips.share": "Run {highlight}/share{/highlight} to create a public link to your conversation at opencode.ai",
   "tui.tips.drag_drop": "Drag and drop images or PDFs into the terminal to add them as context",
   "tui.tips.paste_image": "Press {highlight}Ctrl+V{/highlight} to paste images from your clipboard (on macOS use Ctrl+V, not Cmd+V — the terminal intercepts Cmd+V)",
   "tui.tips.editor":
@@ -132,7 +135,6 @@ export const dict: Record<string, string> = {
   "tui.tips.upgrade": "Run {highlight}mimo upgrade{/highlight} to update to the latest version",
   "tui.tips.auth_list": "Run {highlight}mimo auth list{/highlight} to see all configured providers",
   "tui.tips.agent_create": "Run {highlight}mimo agent create{/highlight} for guided agent creation",
-  "tui.tips.github_trigger": "Use {highlight}/opencode{/highlight} in GitHub issues/PRs to trigger AI actions",
   "tui.tips.github_install": "Run {highlight}mimo github install{/highlight} to set up the GitHub workflow",
   "tui.tips.github_oc": "Comment {highlight}/oc{/highlight} on PR code lines for targeted code reviews",
   "tui.tips.theme_system": 'Use {highlight}"theme": "system"{/highlight} to match your terminal\'s colors',
@@ -162,7 +164,6 @@ export const dict: Record<string, string> = {
   "tui.tips.scroll_accel":
     "Enable {highlight}scroll_acceleration{/highlight} in {highlight}tui.json{/highlight} for smooth macOS-style scrolling",
   "tui.tips.username_toggle": "Toggle username display in chat via command palette ({highlight}Ctrl+P{/highlight})",
-  "tui.tips.docker": "Run {highlight}docker run -it --rm ghcr.io/anomalyco/opencode{/highlight} for containerized use",
   "tui.tips.zen": "Use {highlight}/connect{/highlight} with MiMo Code for curated, tested models",
   "tui.tips.agents_md": "Commit your project's {highlight}AGENTS.md{/highlight} file to Git for team sharing",
   "tui.tips.review": "Use {highlight}/review{/highlight} to review uncommitted changes, branches, or PRs",
@@ -208,7 +209,10 @@ export const dict: Record<string, string> = {
   "tui.skill.html-to-video-pipeline.description": "Short-video magic — make short videos with HTML",
   "tui.skill.arxiv.description": "Search, cite, download, and track arXiv papers",
   "tui.skill.skill-creator.description": "Create, review, and improve agent skills",
+  "tui.skill.drive-mimo.description": "Programmatically drive another MiMoCode process — headless JSON events or interactive TUI via tmux",
   "tui.skill.research-paper-writing.description": "Draft, polish, and reviewer-style critique for academic papers",
+  "tui.skill.codex.description": "Run Codex CLI autonomously in scripts, CI, Docker, and Kubernetes",
+  "tui.skill.claude-code.description": "Delegate coding tasks to Claude Code CLI",
   "tui.skill.design-blueprint.description":
     "Produce a design blueprint (DESIGN.md + Decision Trace) before mocking up any visual",
   "tui.skill.super-research.description":
@@ -217,6 +221,10 @@ export const dict: Record<string, string> = {
     "Deep multi-source investigation with cross-checked, cited reports",
   "tui.skill.modern-python-toolchain.description":
     "Modern Python project setup with uv, ruff, and pyright",
+  "tui.skill.data-analytics.description":
+    "Analyze product and business data, design KPIs, and build dashboards and reports",
+  "tui.skill.product-design.description": "Research, audit, prototype, and validate product and UX designs",
+  "tui.skill.sales.description": "Prepare meetings, research accounts, plan deals, and work with sales systems",
   "tui.skill.compose:ask.description": "Ask the user for decisions or clarifications",
   "tui.skill.compose:brainstorm.description": "Explore requirements and design before implementation",
   "tui.skill.compose:debug.description": "Systematic debugging before proposing fixes",
@@ -249,16 +257,29 @@ export const dict: Record<string, string> = {
   "tui.command.model.cycle_favorite.title": "Favorite cycle",
   "tui.command.model.cycle_favorite_reverse.title": "Favorite cycle reverse",
   "tui.command.agent.list.title": "Switch agent",
+  "tui.command.modalities.title": "Configure input modalities",
+  "tui.modalities.title": "Input modalities — {{model}}",
+  "tui.modalities.saved": "Input modalities updated: {{modalities}}",
+  "tui.modalities.no_model": "No model selected",
+  "tui.modalities.hint.toggle": "toggle",
+  "tui.modalities.hint.save": "save",
   "tui.command.mcp.list.title": "Toggle MCPs",
   "tui.command.never_ask.title_on": "Never-ask: ON (auto-decide, permissions excluded) — click to turn off",
   "tui.command.never_ask.title_off": "Never-ask: OFF — click to turn on (auto-decide, permissions excluded)",
   "tui.command.never_ask.toast_on":
     "Never-ask ON — I won't prompt you; I'll pick the best option myself until you turn it off (/never-ask). Permission requests still need your approval.",
   "tui.command.never_ask.toast_off": "Never-ask OFF — I'll ask you at decision points again.",
+  "tui.command.skip_permissions.title_on": "Skip-permissions: ON (auto-allow permission asks) — click to turn off",
+  "tui.command.skip_permissions.title_off": "Skip-permissions: OFF — click to turn on (auto-allow permission asks)",
+  "tui.command.skip_permissions.toast_on":
+    "Skip-permissions ON — asks auto-allowed (subagents too). Destructive commands still prompt but auto-reject after 60s if unanswered.",
+  "tui.command.skip_permissions.toast_off": "Skip-permissions OFF — asks need your approval again.",
   "tui.command.agent.cycle.title": "Agent cycle",
   "tui.command.variant.cycle.title": "Variant cycle",
   "tui.command.variant.list.title": "Switch model variant",
   "tui.command.agent.cycle.reverse.title": "Agent cycle reverse",
+  "tui.agent.locked": "Cannot switch mode mid-session after entering {{mode}} mode",
+  "tui.agent.locked.subset": "In this session, you can only switch between {{agents}}",
   "tui.command.provider.login.title": "Login",
   "tui.command.provider.connect.title": "Connect provider",
   "tui.command.provider.logout.title": "Logout",
@@ -324,6 +345,23 @@ export const dict: Record<string, string> = {
   "tui.dialog.export.hint.confirm_action": "to confirm",
   "tui.dialog.export.hint.options_action": "for options",
   "tui.toast.copied_to_clipboard": "Copied to clipboard",
+  "tui.toast.try_best.paused_other": "Try-best loop detected; session {{session}} was paused.",
+  "tui.toast.try_best.handoff_failed": "Failed to start the selected harness handoff.",
+  "tui.toast.try_best.continue_failed": "Failed to continue session",
+  "tui.dialog.try_best.title": "Try-best loop detected — turn paused",
+  "tui.dialog.try_best.reason.edit_repeat": "Near-identical edits repeated {{count}} times.",
+  "tui.dialog.try_best.reason.edit_repeat_path": "Near-identical edits repeated {{count}} times in {{path}}.",
+  "tui.dialog.try_best.reason.bash_retry":
+    "The same failing command was retried {{count}} times without a successful edit.",
+  "tui.dialog.try_best.reason.action_streak":
+    "{{count}} consecutive {{action}} actions made no observable progress.",
+  "tui.dialog.try_best.action.edit": "edit",
+  "tui.dialog.try_best.action.verify": "verification",
+  "tui.dialog.try_best.action.same_kind": "same-kind",
+  "tui.dialog.try_best.handoff.title": "Hand off to {{target}}",
+  "tui.dialog.try_best.handoff.description": "Ask MiMo to delegate the unfinished work to this harness",
+  "tui.dialog.try_best.continue.title": "Continue with {{model}}",
+  "tui.dialog.try_best.continue.description": "Ask the current model to abandon this approach and replan",
   "tui.toast.instructions_loaded": "Loaded {{files}}",
   "tui.toast.update_available.title": "Update Available",
   "tui.toast.update_available.confirm": "A new release v{{version}} is available. Would you like to update now?",
@@ -360,6 +398,7 @@ export const dict: Record<string, string> = {
   "tui.command.session.ask.title": "Ask a side question",
   "tui.command.session.ask.description": "Ask the current session a question without disrupting it",
   "tui.command.session.ask.placeholder": "Ask a side question…",
+  "tui.command.session.ask.busy": "Thinking…",
   "tui.command.session.unshare.title": "Unshare session",
   "tui.command.session.undo.title": "Undo previous message",
   "tui.command.session.redo.title": "Redo",

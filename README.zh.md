@@ -126,13 +126,14 @@ Compose 模式提供结构化的 specs-driven 开发流程，内置规划、执�
 
 Workflow 是在沙箱运行时中执行的确定性 JavaScript 脚本，可编排多个 Agent 协作。与 Agent 对话不同，Workflow 编码了固定的阶段序列、有界重试和自动并行化——全程非交互，丢出去跑完即可。
 
-MiMoCode 内置三个 Workflow：
+MiMoCode 内置四个 Workflow：
 
 | Workflow | 阶段 | 说明 |
 |----------|------|------|
 | `compose` | Brainstorm → Design → Implement → Verify → Review → Report → Merge | 完整开发流水线。自动将独立任务并行分发到隔离的 git worktree，每个任务应用 TDD，阶段之间传递结构化输出。适合需求明确且可拆分为独立子任务的场景。 |
 | `deep-research` | Brief → Plan → Research → Reflect → Write → Review | 多源深度调研报告生成器。规划独立研究角度，并行派发子代理搜集带引用的 findings，反思补缺，单点写完整 Markdown 报告，最后冷审引用。支持断点续跑。 |
 | `fact-check` | Plan → Search → Extract → Group → Crosscheck → Report | 对抗式事实验证。并行搜索网络、提取可验证事实、分组去重、用 3 人陪审投票交叉验证，只保留通过的结论。适合精确求证（"X 是否属实？"）。 |
+| `research-experiment` | Baseline → Loop → Audit → Report | 面向可机械验证指标的自主优化循环。建立基线后反复执行“提出假设 → 实现 → 评估 → 保留/回滚”，审计指标作弊风险，并生成可复现的结果日志。需要固定预算的评估命令和明确的可编辑文件范围。 |
 
 compose workflow 与 compose agent 互补：**workflow** 适合需求清晰、任务可独立拆解的场景（确定性、并行、非交互）；**agent** 适合需要中途改方向或在步骤间注入人工判断的场景（对话式、交互式）。
 
@@ -140,23 +141,37 @@ compose workflow 与 compose agent 互补：**workflow** 适合需求清晰、�
 
 ### 内置技能（Builtin Skills）
 
-技能（Skill）是可复用的指令集，教会 Agent 如何处理特定任务（如生成 PDF、写学术论文、搜索 arXiv）。MiMoCode 内置以下技能：
+技能（Skill）是可复用的指令集，教会 Agent 如何处理特定任务（如生成 PDF、写学术论文、搜索 arXiv）。面对新任务时，MiMoCode 会按准确名称、本地化别名和 BM25 相关性搜索可用的非 Compose Skill；高置信度结果会自动加载，不确定的候选则交由 Agent 判断。在 TUI 中输入 `/` 可以浏览自动补全列表，也可以通过 `/<skill-name>` 直接调用 Skill。
+
+MiMoCode 打包了以下内置技能：
 
 | 技能 | 说明 |
 |------|------|
 | `arxiv` | 搜索、阅读、引用和分析 arXiv 论文 |
-| `docx-official` | 生成、读取和转换 Word (.docx) 文件 |
-| `pdf-official` | 生成、读取、填充和转换 PDF 文件 |
-| `pptx-official` | 制作和操作 PowerPoint (.pptx) 幻灯片 |
-| `xlsx-official` | 构建、清洗和转换电子表格 (.xlsx/.csv) |
+| `claude-code` | 将编码、测试、审查和 Git 任务委派给 Claude Code CLI |
+| `codex` | 在无头自动化、CI、容器和远程环境中运行及排查 Codex CLI |
+| `data-analytics` | 通过数据质量、KPI、仪表盘、报告、Notebook 和市场规模测算等工作流分析产品与业务数据 |
+| `deep-research` | 使用并行子智能体和内置 Web 工具生成带引用的多源深度调研报告 |
 | `design-blueprint` | 动手做视觉前先出设计蓝图（DESIGN.md + 决策轨迹）|
+| `docx-official` | 生成、读取和转换 Word (.docx) 文件 |
+| `drive-mimo` | 以无头或交互式 TUI 模式编排、测试和自动化另一个 MiMoCode 进程 |
+| `evolve` | 全面自我修改——改写 Agent 的任意层面：工具、行为钩子、知识、工作流，乃至界面本身 |
 | `frontend-design` | UI 开发的视觉设计指导 |
 | `html-to-video-pipeline` | 通过无头浏览器 + ffmpeg 将 HTML 渲染为 MP4 |
-| `research-paper-writing` | 撰写和打磨学术论文（ML/CV/NLP 风格）|
-| `skill-creator` | 创建和改进 Agent 技能的交互式指南 |
-| `evolve` | 全面自我修改——改写 Agent 的任意层面：工具、行为钩子、知识、工作流，乃至界面本身 |
+| `learn-everything` | 将文档、URL 或主题转化为包含练习、反馈和进度追踪的自适应课程 |
 | `loop` | 按固定周期调度循环提示 |
-| `mimocode` | MiMoCode 功能和配置的自文档参考 |
+| `mimocode-docs` | MiMoCode 功能、命令、Provider 和配置的自文档参考 |
+| `modern-python-toolchain` | 使用 uv、Ruff 和 Pyright 配置现代 Python 项目 |
+| `pdf-official` | 生成、读取、填充和转换 PDF 文件 |
+| `pptx-official` | 制作和操作 PowerPoint (.pptx) 幻灯片 |
+| `product-design` | 通过专项工作流探索、审查、实现和验证产品及 UX 设计 |
+| `research-paper-writing` | 撰写和打磨学术论文（ML/CV/NLP 风格）|
+| `sales` | 支持销售调研、会议准备、客户优先级、交易策略、预测和 CRM 工作流 |
+| `skill-creator` | 创建和改进 Agent 技能的交互式指南 |
+| `super-research` | 执行长周期、可审计的研究、实验、评测、诊断、论文复现和引用校验 |
+| `xlsx-official` | 构建、清洗和转换电子表格 (.xlsx/.csv) |
+
+`claude-code` 和 `codex` 仅在系统分别安装了 `claude` 和 `codex` 可执行文件时提供。其他技能也可能需要其说明中列出的任务专用工具。
 
 **覆盖内置技能：** 在项目（`.mimocode/skills/<name>/SKILL.md`）或个人技能目录（`~/.claude/skills/`、`~/.opencode/skills/` 等）中创建同名技能即可。扫描顺序中后发现的用户技能会覆盖同名的内置技能。
 
@@ -167,8 +182,9 @@ compose workflow 与 compose agent 互补：**workflow** 适合需求清晰、�
 |------|------|
 | `MIMOCODE_DISABLE_BUILTIN_SKILLS=true` | 禁用所有内置技能 |
 | `MIMOCODE_DISABLE_OFFICIAL_SKILLS=true` | 仅禁用办公/媒体类技能：`docx-official`、`pdf-official`、`pptx-official`、`xlsx-official`、`html-to-video-pipeline` |
+| `MIMOCODE_DISABLE_SLASH_SKILLS=true` | 从 TUI 的 `/` 自动补全中隐藏 Skill，但不禁用它们 |
 
-禁用后，对应技能将从 Agent 可用技能列表中完全移除——不会出现在上下文中，也无法被调用。
+前两个选项会将对应技能从 Agent 可用技能列表中完全移除——不会出现在上下文中，也无法被调用。`MIMOCODE_DISABLE_SLASH_SKILLS` 仅影响 TUI 自动补全，Skill 对 Agent 仍然可用。
 
 </details>
 
@@ -260,7 +276,7 @@ MiMoCode 使用 JSON/JSONC 配置文件，并提供 JSON Schema 以获得编辑�
 
 | 文件 | 项目级 | 全局 |
 |------|--------|------|
-| 主配置 | `.mimocode/mimocode.jsonc` | `~/.config/mimocode/mimocode.json` |
+| 主配置 | `.mimocode/mimocode.jsonc`（也支持 `.json`） | `~/.config/mimocode/mimocode.jsonc`（也支持 `.json`） |
 | TUI 配置 | `.mimocode/tui.json` | `~/.config/mimocode/tui.json` |
 | 认证凭据 | — | `~/.local/share/mimocode/auth.json` |
 
@@ -304,6 +320,41 @@ MiMoCode 在首次加载配置时会自动注入 `$schema` 字段，使编辑器
 如需删除已存储的凭据，删除 data 目录下的 `auth.json` 即可。macOS 下 XDG data 默认为 `~/Library/Application Support/mimocode/`。
 
 </details>
+
+### 自定义 OpenAI 兼容端点
+
+如果 Provider 不在内置模型目录中，可以直接使用它的 Base URL、API Key 和模型 ID 进行配置：
+
+```jsonc
+{
+  "$schema": "https://mimo.xiaomi.com/mimocode/config.json",
+  "model": "custom/MODEL_NAME",
+  "provider": {
+    "custom": {
+      "name": "Custom",
+      "npm": "@ai-sdk/openai-compatible",
+      "only_configured_models": true,
+      "models": {
+        "MODEL_NAME": {
+          "name": "MODEL_NAME"
+        }
+      },
+      "options": {
+        "baseURL": "BASE_URL",
+        "apiKey": "API_KEY"
+      }
+    }
+  }
+}
+```
+
+- 必须使用准确的字段名 `baseURL` 和 `apiKey`。
+- 原样保留用户提供的 Base URL 和模型 ID。MiMoCode 不要求 Provider 已存在于内置目录中；除非端点本身要求，否则不要自行增删 `/v1`。
+- `models` 下的键是上游模型 ID。模型 ID 可以包含 `/`，因为 `model` 中只有第一个 `/` 用于分隔 Provider ID 和模型 ID。
+- 如有需要，可将 `custom` 替换为其他未占用的小写 Provider ID，并同步更新顶层 `model` 中的 ID。
+- `@ai-sdk/openai-compatible` 适用于 OpenAI 兼容 API；使用其他通信协议的服务需要对应 Provider 的专用适配器。
+
+全局配置请写入 `~/.config/mimocode/mimocode.jsonc`（或同目录的 `mimocode.json`），仅项目生效的配置请写入 `.mimocode/mimocode.jsonc`（或 `.json`），并与已有内容合并。`apiKey` 会以明文保存在配置中，请确保文件仅当前用户可读，且不要提交到版本库。可运行 `mimo models` 或使用 TUI 模型选择器验证配置结果。
 
 ### 主要选项
 
@@ -373,7 +424,7 @@ MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS=1 mimo
 ## 开发
 
 ```bash
-bun install              # 安装依赖
+bun ci                   # 安装依赖(= bun install --frozen-lockfile)
 bun run dev              # 开发模式运行
 bun turbo typecheck      # 类型检查
 ```

@@ -119,6 +119,17 @@ export type EventActorStuck = {
   }
 }
 
+export type EventActorStalled = {
+  type: "actor.stalled"
+  properties: {
+    sessionID: string
+    actorID: string
+    description: string
+    lastTurnTime: number
+    stalledDuration: number
+  }
+}
+
 export type EventWriterCachePerf = {
   type: "writer.cache_perf"
   properties: {
@@ -222,6 +233,19 @@ export type EventMetricsAgentRequest = {
     total_tokens_out: number
     files_changed: number
     validation_status: string
+  }
+}
+
+export type EventMetricsTryBestDetected = {
+  type: "metrics.try_best_detected"
+  properties: {
+    sessionID: string
+    reason: "edit_repeat" | "bash_retry" | "action_streak"
+    provider: string
+    model_id: string
+    count: number
+    similarity?: number
+    action?: "edit" | "verify"
   }
 }
 
@@ -564,6 +588,25 @@ export type EventSessionRetryAttempt = {
   }
 }
 
+export type EventSessionTryBestDetected = {
+  type: "session.try_best.detected"
+  properties: {
+    sessionID: string
+    agentID?: string
+    providerID: string
+    modelID: string
+    reason: "edit_repeat" | "bash_retry" | "action_streak"
+    evidence: {
+      tool: string
+      path?: string
+      command?: string
+      count: number
+      similarity?: number
+      action?: "edit" | "verify"
+    }
+  }
+}
+
 export type EventHookExecuted = {
   type: "hook.executed"
   properties: {
@@ -717,6 +760,36 @@ export type EventBashInteractiveReplied = {
   }
 }
 
+export type SessionStatus =
+  | {
+      type: "idle"
+    }
+  | {
+      type: "retry"
+      attempt: number
+      message: string
+      next: number
+    }
+  | {
+      type: "busy"
+      message?: string
+    }
+
+export type EventSessionStatus = {
+  type: "session.status"
+  properties: {
+    sessionID: string
+    status: SessionStatus
+  }
+}
+
+export type EventSessionIdle = {
+  type: "session.idle"
+  properties: {
+    sessionID: string
+  }
+}
+
 export type EventVcsBranchUpdated = {
   type: "vcs.branch.updated"
   properties: {
@@ -780,36 +853,6 @@ export type EventTodoUpdated = {
   properties: {
     sessionID: string
     todos: Array<Todo>
-  }
-}
-
-export type SessionStatus =
-  | {
-      type: "idle"
-    }
-  | {
-      type: "retry"
-      attempt: number
-      message: string
-      next: number
-    }
-  | {
-      type: "busy"
-      message?: string
-    }
-
-export type EventSessionStatus = {
-  type: "session.status"
-  properties: {
-    sessionID: string
-    status: SessionStatus
-  }
-}
-
-export type EventSessionIdle = {
-  type: "session.idle"
-  properties: {
-    sessionID: string
   }
 }
 
@@ -1177,6 +1220,7 @@ export type ToolStateError = {
     start: number
     end: number
   }
+  attachments?: Array<FilePart>
 }
 
 export type ToolState = ToolStatePending | ToolStateRunning | ToolStateCompleted | ToolStateError
@@ -1520,6 +1564,7 @@ export type GlobalEvent = {
     | EventActorRegistered
     | EventActorStatus
     | EventActorStuck
+    | EventActorStalled
     | EventWriterCachePerf
     | EventInboxArrived
     | EventTaskCreated
@@ -1527,6 +1572,7 @@ export type GlobalEvent = {
     | EventMetricsModelCall
     | EventMetricsToolCall
     | EventMetricsAgentRequest
+    | EventMetricsTryBestDetected
     | EventTeamCreated
     | EventTeamMemberJoined
     | EventWorkflowPhase
@@ -1549,6 +1595,7 @@ export type GlobalEvent = {
     | EventSessionDiff
     | EventSessionError
     | EventSessionRetryAttempt
+    | EventSessionTryBestDetected
     | EventHookExecuted
     | EventHookReactReentered
     | EventHookReactMaxReached
@@ -1558,6 +1605,8 @@ export type GlobalEvent = {
     | EventSessionCwd
     | EventBashInteractiveAsked
     | EventBashInteractiveReplied
+    | EventSessionStatus
+    | EventSessionIdle
     | EventVcsBranchUpdated
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
@@ -1565,8 +1614,6 @@ export type GlobalEvent = {
     | EventWorktreeReady
     | EventWorktreeFailed
     | EventTodoUpdated
-    | EventSessionStatus
-    | EventSessionIdle
     | EventSessionGoal
     | EventSessionCompacted
     | EventPtyCreated
@@ -1773,7 +1820,7 @@ export type ProviderConfig = {
       interleaved?:
         | true
         | {
-            field: "reasoning_content" | "reasoning_details"
+            field: "reasoning" | "reasoning_content" | "reasoning_details"
           }
       cost?: {
         input: number
@@ -1916,15 +1963,9 @@ export type Config = {
    */
   $schema?: string
   logLevel?: LogLevel
-  /**
-   * Environment variables to inject into the mimocode process and its child processes (e.g. the bash tool). A variable already set in the real environment takes precedence — config values only apply when the variable is not already set. Supports {env:VAR} and {file:path} substitution.
-   */
-  env?: {
-    [key: string]: string
-  }
   server?: ServerConfig
   /**
-   * Command configuration, see https://opencode.ai/docs/commands
+   * Command configuration, see https://mimo.xiaomi.com/mimocode/commands
    */
   command?: {
     [key: string]: {
@@ -2037,7 +2078,7 @@ export type Config = {
     [key: string]: AgentConfig | undefined
   }
   /**
-   * Agent configuration, see https://opencode.ai/docs/agents
+   * Agent configuration, see https://mimo.xiaomi.com/mimocode/agents
    */
   agent?: {
     plan?: AgentConfig
@@ -2303,6 +2344,27 @@ export type Config = {
      */
     continue_loop_on_deny?: boolean
     /**
+     * Try-best loop detector thresholds.
+     */
+    try_best?: {
+      /**
+       * Recent edit events to compare (default 12).
+       */
+      edit_window?: number
+      /**
+       * Jaccard threshold for near-identical edit detection (default 0.8).
+       */
+      edit_similarity?: number
+      /**
+       * Prior similar edits required before pausing (default 2).
+       */
+      edit_matches?: number
+      /**
+       * Consecutive edit or verify actions without progress before pausing (default 4).
+       */
+      action_streak?: number
+    }
+    /**
      * Timeout in milliseconds for model context protocol (MCP) requests
      */
     mcp_timeout?: number
@@ -2425,7 +2487,7 @@ export type Model = {
     interleaved:
       | boolean
       | {
-          field: "reasoning_content" | "reasoning_details"
+          field: "reasoning" | "reasoning_content" | "reasoning_details"
         }
   }
   cost: {
@@ -2719,6 +2781,7 @@ export type Event =
   | EventActorRegistered
   | EventActorStatus
   | EventActorStuck
+  | EventActorStalled
   | EventWriterCachePerf
   | EventInboxArrived
   | EventTaskCreated
@@ -2726,6 +2789,7 @@ export type Event =
   | EventMetricsModelCall
   | EventMetricsToolCall
   | EventMetricsAgentRequest
+  | EventMetricsTryBestDetected
   | EventTeamCreated
   | EventTeamMemberJoined
   | EventWorkflowPhase
@@ -2748,6 +2812,7 @@ export type Event =
   | EventSessionDiff
   | EventSessionError
   | EventSessionRetryAttempt
+  | EventSessionTryBestDetected
   | EventHookExecuted
   | EventHookReactReentered
   | EventHookReactMaxReached
@@ -2757,6 +2822,8 @@ export type Event =
   | EventSessionCwd
   | EventBashInteractiveAsked
   | EventBashInteractiveReplied
+  | EventSessionStatus
+  | EventSessionIdle
   | EventVcsBranchUpdated
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
@@ -2764,8 +2831,6 @@ export type Event =
   | EventWorktreeReady
   | EventWorktreeFailed
   | EventTodoUpdated
-  | EventSessionStatus
-  | EventSessionIdle
   | EventSessionGoal
   | EventSessionCompacted
   | EventPtyCreated
@@ -2845,6 +2910,7 @@ export type Command = {
   agent?: string
   model?: string
   source?: "command" | "mcp" | "skill"
+  bundled?: boolean
   template: string
   subtask?: boolean
   hints: Array<string>
@@ -5283,6 +5349,58 @@ export type PermissionListResponses = {
 
 export type PermissionListResponse = PermissionListResponses[keyof PermissionListResponses]
 
+export type PermissionSkipAllData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/permission/skip-all"
+}
+
+export type PermissionSkipAllResponses = {
+  /**
+   * Current skip-all state
+   */
+  200: boolean
+}
+
+export type PermissionSkipAllResponse = PermissionSkipAllResponses[keyof PermissionSkipAllResponses]
+
+export type PermissionSetSkipAllData = {
+  body?: {
+    /**
+     * Whether skip-all is enabled
+     */
+    enabled: boolean
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/permission/skip-all"
+}
+
+export type PermissionSetSkipAllErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type PermissionSetSkipAllError = PermissionSetSkipAllErrors[keyof PermissionSetSkipAllErrors]
+
+export type PermissionSetSkipAllResponses = {
+  /**
+   * Updated skip-all state
+   */
+  200: boolean
+}
+
+export type PermissionSetSkipAllResponse = PermissionSetSkipAllResponses[keyof PermissionSetSkipAllResponses]
+
 export type WorkflowListData = {
   body?: never
   path?: never
@@ -6660,6 +6778,7 @@ export type AppSkillsResponses = {
   200: Array<{
     name: string
     description: string
+    aliases?: Array<string>
     location: string
     content: string
     hidden?: boolean

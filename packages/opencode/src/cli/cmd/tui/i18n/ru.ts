@@ -26,7 +26,7 @@ export const dict = {
   "tui.prompt.placeholder.normal": 'Спросите что угодно... "{{example}}"',
   "tui.prompt.placeholder.shell": 'Выполните команду... "{{example}}"',
   "tui.prompt.ghost": "{{prediction}}  (Tab — принять)",
-  "tui.paste.image.fallback_path": "Модель не поддерживает изображения — вместо этого вставлен путь к изображению",
+  "tui.paste.image.fallback_path": "Модель не поддерживает изображения — вместо этого вставлен путь к изображению. Используйте /modalities для включения",
   "tui.home.placeholder.example.todo": "Исправь TODO в кодовой базе",
   "tui.home.placeholder.example.stack": "Какой технологический стек у этого проекта?",
   "tui.home.placeholder.example.tests": "Почини сломанные тесты",
@@ -45,25 +45,27 @@ export const dict = {
 
   // Tips
   "tui.tips.label": "Подсказка",
-  "tui.tips.plain_terminal": "Рекомендуем использовать iTerm или терминал VS Code",
+  "tui.tips.plain_terminal": "Стандартный терминал Mac имеет ограничения рендеринга. Используйте iTerm2 или терминал VS Code",
   "tui.tips.attach_file":
     "Введите {highlight}@{/highlight}, а затем имя файла, чтобы выполнить нечёткий поиск и прикрепить файлы",
   "tui.tips.shell_prefix":
     "Начните сообщение с {highlight}!{/highlight}, чтобы выполнить shell-команду напрямую (например, {highlight}!ls -la{/highlight})",
   "tui.tips.tab_agent":
+    "Нажмите {highlight}Tab{/highlight} или {highlight}Shift+Tab{/highlight}, чтобы переключаться между агентами Build, Plan и Compose",
+  "tui.tips.tab_agent_orchestrator":
     "Нажмите {highlight}Tab{/highlight} или {highlight}Shift+Tab{/highlight}, чтобы переключаться между агентами Build, Plan, Compose и Orchestrator",
   "tui.tips.theme_mode":
     "Выполните {highlight}/dark{/highlight} для тёмного режима или {highlight}/light{/highlight} для светлого",
   "tui.tips.doc": "Выполните {highlight}/doc{/highlight}, чтобы открыть пользовательскую документацию",
   "tui.tips.free_models": "Бесплатные модели доступны ограниченное время — попробуйте их сейчас!",
+  "tui.tips.multi_skills":
+    "Комбинируйте несколько {highlight}/skill-name{/highlight} в одном сообщении, чтобы использовать несколько Skills одновременно",
   "tui.tips.background":
     "Выполните {highlight}/background{/highlight}, чтобы установить произвольное изображение в качестве фона главной страницы",
   "tui.tips.undo":
     "Используйте {highlight}/undo{/highlight}, чтобы отменить последнее сообщение и изменения файлов",
   "tui.tips.redo":
     "Используйте {highlight}/redo{/highlight}, чтобы вернуть ранее отменённые сообщения и изменения",
-  "tui.tips.share":
-    "Выполните {highlight}/share{/highlight}, чтобы получить публичную ссылку на диалог на opencode.ai",
   "tui.tips.drag_drop": "Перетащите изображения или PDF в терминал, чтобы добавить их в контекст",
   "tui.tips.paste_image":
     "Нажмите {highlight}Ctrl+V{/highlight}, чтобы вставить изображение из буфера обмена (в macOS используйте Ctrl+V, а не Cmd+V — терминал перехватывает Cmd+V)",
@@ -180,8 +182,6 @@ export const dict = {
     "Выполните {highlight}mimo auth list{/highlight}, чтобы увидеть всех настроенных провайдеров",
   "tui.tips.agent_create":
     "Выполните {highlight}mimo agent create{/highlight}, чтобы создать агента в пошаговом режиме",
-  "tui.tips.github_trigger":
-    "Используйте {highlight}/opencode{/highlight} в issue/PR на GitHub, чтобы запускать AI-действия",
   "tui.tips.github_install":
     "Выполните {highlight}mimo github install{/highlight}, чтобы настроить GitHub-workflow",
   "tui.tips.github_oc":
@@ -233,8 +233,6 @@ export const dict = {
     "Включите {highlight}scroll_acceleration{/highlight} в {highlight}tui.json{/highlight} для плавной прокрутки",
   "tui.tips.username_toggle":
     "Переключайте отображение имени пользователя через палитру команд ({highlight}Ctrl+P{/highlight})",
-  "tui.tips.docker":
-    "Выполните {highlight}docker run -it --rm ghcr.io/anomalyco/opencode{/highlight} для контейнерного запуска",
   "tui.tips.zen":
     "Используйте {highlight}/connect{/highlight} с MiMo Code для подобранных и протестированных моделей",
   "tui.tips.agents_md":
@@ -287,7 +285,10 @@ export const dict = {
   "tui.skill.html-to-video-pipeline.description": "Магический инструмент для коротких видео — создавайте короткие видео с помощью HTML",
   "tui.skill.arxiv.description": "Поиск, цитирование, загрузка и отслеживание статей arXiv",
   "tui.skill.skill-creator.description": "Создание, проверка и улучшение skills агента",
+  "tui.skill.drive-mimo.description": "Программное управление другим процессом MiMoCode — headless JSON-события или интерактивный TUI через tmux",
   "tui.skill.research-paper-writing.description": "Написание, полировка и рецензирование научных статей",
+  "tui.skill.codex.description": "Автономный запуск Codex CLI в скриптах, CI, Docker и Kubernetes",
+  "tui.skill.claude-code.description": "Делегирование задач программирования Claude Code CLI",
   "tui.skill.design-blueprint.description":
     "Создать проектную спецификацию (DESIGN.md + Decision Trace) до макетов",
   "tui.skill.super-research.description":
@@ -296,6 +297,12 @@ export const dict = {
     "Глубокое многоисточниковое исследование с перекрёстной проверкой и цитированием",
   "tui.skill.modern-python-toolchain.description":
     "Настройка Python-проекта с uv, ruff и pyright",
+  "tui.skill.data-analytics.description":
+    "Анализ данных о продукте и бизнесе, проектирование KPI, создание дашбордов и отчётов",
+  "tui.skill.product-design.description":
+    "Исследование, аудит, прототипирование и проверка дизайна продукта и UX",
+  "tui.skill.sales.description":
+    "Подготовка встреч, исследование клиентов, планирование сделок и работа с системами продаж",
   "tui.skill.compose:ask.description": "Запросить у пользователя решение или уточнение",
   "tui.skill.compose:brainstorm.description": "Исследовать требования и дизайн перед реализацией",
   "tui.skill.compose:debug.description": "Системная отладка перед предложением исправлений",
@@ -328,16 +335,29 @@ export const dict = {
   "tui.command.model.cycle_favorite.title": "Цикл избранных моделей",
   "tui.command.model.cycle_favorite_reverse.title": "Цикл избранных моделей (в обратном порядке)",
   "tui.command.agent.list.title": "Сменить агента",
+  "tui.command.modalities.title": "Настроить входные модальности",
+  "tui.modalities.title": "Входные модальности — {{model}}",
+  "tui.modalities.saved": "Входные модальности обновлены: {{modalities}}",
+  "tui.modalities.no_model": "Модель не выбрана",
+  "tui.modalities.hint.toggle": "переключить",
+  "tui.modalities.hint.save": "сохранить",
   "tui.command.mcp.list.title": "Переключить MCP",
   "tui.command.never_ask.title_on": "Без вопросов: ВКЛ (авто-решение, кроме запросов разрешений) — нажмите для выключения",
   "tui.command.never_ask.title_off": "Без вопросов: ВЫКЛ — нажмите для включения (авто-решение, кроме запросов разрешений)",
   "tui.command.never_ask.toast_on":
     "Без вопросов ВКЛ — я не буду спрашивать; сам выберу лучший вариант, пока вы не выключите (/never-ask). Запросы разрешений по-прежнему требуют вашего подтверждения.",
   "tui.command.never_ask.toast_off": "Без вопросов ВЫКЛ — я снова буду спрашивать вас в точках принятия решений.",
+  "tui.command.skip_permissions.title_on": "Пропуск разрешений: ВКЛ (авто-одобрение запросов) — нажмите для выключения",
+  "tui.command.skip_permissions.title_off": "Пропуск разрешений: ВЫКЛ — нажмите для включения (авто-одобрение запросов)",
+  "tui.command.skip_permissions.toast_on":
+    "Пропуск разрешений ВКЛ — запросы авто-одобряются (включая субагентов). Деструктивные команды спрашивают, но авто-отклоняются через 60с без ответа.",
+  "tui.command.skip_permissions.toast_off": "Пропуск разрешений ВЫКЛ — запросы снова требуют вашего подтверждения.",
   "tui.command.agent.cycle.title": "Цикл агентов",
   "tui.command.variant.cycle.title": "Цикл вариантов",
   "tui.command.variant.list.title": "Сменить вариант модели",
   "tui.command.agent.cycle.reverse.title": "Цикл агентов (в обратном порядке)",
+  "tui.agent.locked": "Невозможно сменить режим после входа в {{mode}}",
+  "tui.agent.locked.subset": "В этой сессии можно переключаться только между {{agents}}",
   "tui.command.provider.login.title": "Войти",
   "tui.command.provider.connect.title": "Подключить провайдера",
   "tui.command.provider.logout.title": "Выйти",
@@ -395,6 +415,23 @@ export const dict = {
   "tui.dialog.export.hint.confirm_action": "для подтверждения",
   "tui.dialog.export.hint.options_action": "для параметров",
   "tui.toast.copied_to_clipboard": "Скопировано в буфер обмена",
+  "tui.toast.try_best.paused_other": "Обнаружен цикл try-best; сеанс {{session}} приостановлен.",
+  "tui.toast.try_best.handoff_failed": "Не удалось запустить передачу выбранному исполнителю.",
+  "tui.toast.try_best.continue_failed": "Не удалось продолжить сеанс",
+  "tui.dialog.try_best.title": "Обнаружен цикл try-best — ход приостановлен",
+  "tui.dialog.try_best.reason.edit_repeat": "Почти одинаковые правки повторились {{count}} раз.",
+  "tui.dialog.try_best.reason.edit_repeat_path": "Почти одинаковые правки повторились {{count}} раз в {{path}}.",
+  "tui.dialog.try_best.reason.bash_retry":
+    "Одна и та же неудачная команда повторилась {{count}} раз без успешной правки.",
+  "tui.dialog.try_best.reason.action_streak":
+    "{{count}} последовательных действий типа «{{action}}» не дали заметного результата.",
+  "tui.dialog.try_best.action.edit": "правка",
+  "tui.dialog.try_best.action.verify": "проверка",
+  "tui.dialog.try_best.action.same_kind": "один тип",
+  "tui.dialog.try_best.handoff.title": "Передать работу {{target}}",
+  "tui.dialog.try_best.handoff.description": "Попросить MiMo поручить незавершённую работу этому исполнителю",
+  "tui.dialog.try_best.continue.title": "Продолжить с {{model}}",
+  "tui.dialog.try_best.continue.description": "Попросить текущую модель отказаться от этого подхода и составить новый план",
   "tui.toast.instructions_loaded": "Загружено {{files}}",
   "tui.toast.update_available.title": "Доступно обновление",
   "tui.toast.update_available.confirm": "Доступна новая версия v{{version}}. Обновить сейчас?",
@@ -431,6 +468,7 @@ export const dict = {
   "tui.command.session.ask.title": "Задать побочный вопрос",
   "tui.command.session.ask.description": "Задайте вопрос текущей сессии, не прерывая её",
   "tui.command.session.ask.placeholder": "Задайте побочный вопрос…",
+  "tui.command.session.ask.busy": "Думаю…",
   "tui.command.session.unshare.title": "Отменить публикацию",
   "tui.command.session.undo.title": "Отменить предыдущее сообщение",
   "tui.command.session.redo.title": "Повторить",

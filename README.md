@@ -129,13 +129,14 @@ Compose mode provides a structured workflow for specs-driven development. It inc
 
 Workflows are deterministic JavaScript scripts that orchestrate multiple agents in a sandboxed runtime. Unlike agent conversations, workflows encode fixed phase sequences with bounded retries and automatic parallelization — fire-and-forget execution with no user interaction required.
 
-MiMoCode ships with three built-in workflows:
+MiMoCode ships with four built-in workflows:
 
 | Workflow | Phases | Description |
 |----------|--------|-------------|
 | `compose` | Brainstorm → Design → Implement → Verify → Review → Report → Merge | Full development pipeline. Auto-parallelizes independent tasks into isolated git worktrees, applies TDD per task, chains structured output between phases. Best for well-defined tasks that decompose into independent subtasks. |
 | `deep-research` | Brief → Plan → Research → Reflect → Write → Review | Multi-source deep research report generator. Plans independent research angles, runs parallel sub-agents to collect cited findings, reflects on gaps, writes a single coherent Markdown report, then cold-reviews citations. Convergent: resumable via file checkpoints. |
 | `fact-check` | Plan → Search → Extract → Group → Crosscheck → Report | Adversarial fact verification. Runs parallel web searches, extracts checkable facts, groups duplicates, then cross-checks each with a 3-juror adversarial vote. Best for precise claims ("Is X true?"). |
+| `research-experiment` | Baseline → Loop → Audit → Report | Autonomous optimization loop for a mechanically verifiable metric. Establishes a baseline, iterates through hypothesize → implement → evaluate → keep/revert, audits for metric gaming, and produces a reproducible result log. Requires a fixed-budget evaluation command and an explicit editable-file scope. |
 
 The compose workflow complements the compose agent: use the **workflow** when requirements are clear and tasks split cleanly (deterministic, parallel, non-interactive); use the **agent** when you need to redirect mid-flow or inject judgment between steps (conversational, interactive).
 
@@ -143,23 +144,37 @@ The compose workflow complements the compose agent: use the **workflow** when re
 
 ### Builtin Skills
 
-Skills are reusable instruction sets that teach agents how to handle specific tasks (e.g. generating PDFs, writing academic papers, searching arXiv). MiMoCode ships with the following builtin skills:
+Skills are reusable instruction sets that teach agents how to handle specific tasks (e.g. generating PDFs, writing academic papers, searching arXiv). For a new task, MiMoCode searches available non-Compose skills by exact name, localized alias, and BM25 relevance. High-confidence matches are loaded automatically; uncertain matches are ranked for the agent to assess. In the TUI, type `/` to browse the autocomplete list or invoke a skill directly with `/<skill-name>`.
+
+MiMoCode bundles the following builtin skills:
 
 | Skill | Description |
 |-------|-------------|
 | `arxiv` | Search, read, cite, and analyze arXiv papers |
-| `docx-official` | Produce, read, and transform Word (.docx) files |
-| `pdf-official` | Produce, read, fill, and transform PDF files |
-| `pptx-official` | Author and manipulate PowerPoint (.pptx) decks |
-| `xlsx-official` | Build, clean, and transform spreadsheets (.xlsx/.csv) |
+| `claude-code` | Delegate coding, testing, review, and Git tasks to the Claude Code CLI |
+| `codex` | Run and troubleshoot the Codex CLI in headless automation, CI, containers, and remote environments |
+| `data-analytics` | Analyze product and business data through reusable workflows for data quality, KPIs, dashboards, reports, notebooks, and market sizing |
+| `deep-research` | Produce cited, multi-source research reports with parallel subagents and built-in web tools |
 | `design-blueprint` | Produce a design blueprint (DESIGN.md + Decision Trace) before mocking up visuals |
+| `docx-official` | Produce, read, and transform Word (.docx) files |
+| `drive-mimo` | Script, test, and automate another MiMoCode process in headless or interactive TUI mode |
+| `evolve` | Total self-modification — rewrite any layer of the agent: tools, behavior hooks, knowledge, workflows, even the UI |
 | `frontend-design` | Visual design guidance for UI work |
 | `html-to-video-pipeline` | HTML-to-MP4 rendering via headless browser + ffmpeg |
-| `research-paper-writing` | Write and polish academic papers (ML/CV/NLP style) |
-| `skill-creator` | Interactive guide for creating and improving agent skills |
-| `evolve` | Total self-modification — rewrite any layer of the agent: tools, behavior hooks, knowledge, workflows, even the UI |
+| `learn-everything` | Turn documents, URLs, or topics into adaptive courses with exercises, feedback, and progress tracking |
 | `loop` | Schedule recurring prompts on a fixed cadence |
-| `mimocode` | Self-documenting reference for MiMoCode features and config |
+| `mimocode-docs` | Self-documenting reference for MiMoCode features, commands, providers, and configuration |
+| `modern-python-toolchain` | Set up modern Python projects with uv, Ruff, and Pyright |
+| `pdf-official` | Produce, read, fill, and transform PDF files |
+| `pptx-official` | Author and manipulate PowerPoint (.pptx) decks |
+| `product-design` | Explore, audit, implement, and QA product and UX designs through focused workflows |
+| `research-paper-writing` | Write and polish academic papers (ML/CV/NLP style) |
+| `sales` | Support sales research, meeting preparation, account prioritization, deal strategy, forecasting, and CRM workflows |
+| `skill-creator` | Interactive guide for creating and improving agent skills |
+| `super-research` | Run long-horizon, auditable research, experiments, benchmarks, diagnostics, reproductions, and citation checks |
+| `xlsx-official` | Build, clean, and transform spreadsheets (.xlsx/.csv) |
+
+`claude-code` and `codex` are exposed only when the `claude` and `codex` executables, respectively, are installed. Other skills may still require task-specific tools described in their instructions.
 
 **Overriding a builtin skill:** Create a skill with the same `name` in your project (`.mimocode/skills/<name>/SKILL.md`) or personal skill directory (`~/.claude/skills/`, `~/.opencode/skills/`, etc.). User skills discovered later in the scan order override builtins with the same name.
 
@@ -170,8 +185,9 @@ Skills are reusable instruction sets that teach agents how to handle specific ta
 |----------|--------|
 | `MIMOCODE_DISABLE_BUILTIN_SKILLS=true` | Disable all builtin skills |
 | `MIMOCODE_DISABLE_OFFICIAL_SKILLS=true` | Disable only the office/media skills: `docx-official`, `pdf-official`, `pptx-official`, `xlsx-official`, `html-to-video-pipeline` |
+| `MIMOCODE_DISABLE_SLASH_SKILLS=true` | Hide skills from TUI `/` autocomplete without disabling them |
 
-When disabled, the corresponding skills are removed from the agent's available skill list entirely — they will not appear in context and cannot be invoked.
+The first two options remove the corresponding skills from the agent's available skill list entirely — they will not appear in context and cannot be invoked. `MIMOCODE_DISABLE_SLASH_SKILLS` affects only TUI autocomplete; the skills remain available to agents.
 
 </details>
 
@@ -263,7 +279,7 @@ MiMoCode uses JSON/JSONC config files with published JSON Schemas for autocomple
 
 | File | Project-level | Global |
 |------|--------------|--------|
-| Main config | `.mimocode/mimocode.jsonc` | `~/.config/mimocode/mimocode.json` |
+| Main config | `.mimocode/mimocode.jsonc` (also `.json`) | `~/.config/mimocode/mimocode.jsonc` (also `.json`) |
 | TUI config | `.mimocode/tui.json` | `~/.config/mimocode/tui.json` |
 | Auth credentials | — | `~/.local/share/mimocode/auth.json` |
 
@@ -307,6 +323,41 @@ Beyond config files, MiMoCode stores runtime data under XDG paths (or `$MIMOCODE
 To remove stored credentials, delete `auth.json` from the data directory. On macOS, XDG data defaults to `~/Library/Application Support/mimocode/`.
 
 </details>
+
+### Custom OpenAI-Compatible Endpoints
+
+If your provider is not in the built-in model catalog, configure it directly with its base URL, API key, and model ID:
+
+```jsonc
+{
+  "$schema": "https://mimo.xiaomi.com/mimocode/config.json",
+  "model": "custom/MODEL_NAME",
+  "provider": {
+    "custom": {
+      "name": "Custom",
+      "npm": "@ai-sdk/openai-compatible",
+      "only_configured_models": true,
+      "models": {
+        "MODEL_NAME": {
+          "name": "MODEL_NAME"
+        }
+      },
+      "options": {
+        "baseURL": "BASE_URL",
+        "apiKey": "API_KEY"
+      }
+    }
+  }
+}
+```
+
+- Use the exact keys `baseURL` and `apiKey`.
+- Preserve the base URL and model ID exactly as supplied. MiMoCode does not require a known provider and you should not add or remove `/v1` unless the endpoint requires it.
+- The key under `models` is the upstream model ID. Model IDs containing `/` are supported because only the first `/` in `model` separates the provider ID from the model ID.
+- Replace `custom` with another unused lowercase provider ID if needed, and use the same ID in the top-level `model` value.
+- `@ai-sdk/openai-compatible` is for OpenAI-compatible APIs. Services using a different wire protocol require their provider-specific adapter.
+
+Put user-wide settings in `~/.config/mimocode/mimocode.jsonc` (or `mimocode.json` in the same directory), or project-only settings in `.mimocode/mimocode.jsonc` (or `.json`), and merge them with any existing configuration. Because `apiKey` is stored as plaintext, keep the file readable only by your user and never commit it. Run `mimo models` or use the TUI model picker to verify the configured model.
 
 ### Key Options
 
@@ -385,7 +436,7 @@ confirmation. Only use it where you fully trust the workspace.
 ## Development
 
 ```bash
-bun install              # Install dependencies
+bun ci                   # Install dependencies (= bun install --frozen-lockfile)
 bun run dev              # Run in development mode
 bun turbo typecheck      # Type check
 ```
