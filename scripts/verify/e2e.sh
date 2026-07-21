@@ -261,7 +261,7 @@ sys.exit(1)
 e2e_g_binary_version() {
   local v
   v="$("$MIMOCODE_BIN" --version 2>/dev/null)"
-  if [[ "$v" =~ ^0\.0\.0-main-[0-9]+$ ]]; then
+  if [[ "$v" =~ ^0\.0\.0-main-[0-9a-f]+$ ]]; then
     echo "PASS: binary version=$v"
     return 0
   fi
