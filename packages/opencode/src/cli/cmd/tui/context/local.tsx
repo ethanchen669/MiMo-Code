@@ -51,7 +51,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         current: undefined as string | undefined,
         sessionHasMessages: false,
       })
-      const FREE_SWITCH_GROUP = ["build", "plan", "compose"]
+      const FREE_SWITCH_GROUP = ["build", "plan", "compose", "security"]
       const canSwitchTo = (target: string) => {
         if (!agentStore.sessionHasMessages) return true
         const current = agentStore.current
