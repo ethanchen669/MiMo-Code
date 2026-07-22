@@ -826,7 +826,11 @@ export const ActorTool = Tool.define(
         // error in output." (The explicit action="wait" returns the structured
         // snapshot as a regular tool result — that's a different contract.)
         if (outcome.status === "failure") {
-          return yield* Effect.fail(new Error(`Tool execution failed: ${outcome.error ?? "unknown"}`))
+          const errorDetail =
+            typeof outcome.error === "object" && outcome.error !== null && "message" in outcome.error
+              ? (outcome.error as { message: string }).message
+              : String(outcome.error ?? "unknown")
+          return yield* Effect.fail(new Error(`Subagent execution failed: ${errorDetail}`))
         }
 
         const resultText =

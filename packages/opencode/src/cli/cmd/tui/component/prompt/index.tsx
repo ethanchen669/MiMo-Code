@@ -1374,7 +1374,22 @@ export function Prompt(props: PromptProps) {
     return provider?.models[current.modelID]?.capabilities?.input?.image ?? false
   }
 
-  function insertFileReference(filepath: string) {
+  function mimeFromExtension(filepath: string): string | undefined {
+    const ext = path.extname(filepath).toLowerCase()
+    const map: Record<string, string> = {
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+      ".bmp": "image/bmp",
+      ".svg": "image/svg+xml",
+      ".pdf": "application/pdf",
+    }
+    return map[ext]
+  }
+
+  function insertFileReference(filepath: string, mime?: string) {
     const filename = path.basename(filepath)
     const currentOffset = input.visualCursor.offset
     const extmarkStart = currentOffset
@@ -1393,7 +1408,7 @@ export function Prompt(props: PromptProps) {
         const partIndex = draft.prompt.parts.length
         draft.prompt.parts.push({
           type: "file" as const,
-          mime: "text/plain",
+          mime: mime ?? mimeFromExtension(filepath) ?? "text/plain",
           filename,
           url: `file://${filepath}`,
           source: {
@@ -1421,7 +1436,7 @@ export function Prompt(props: PromptProps) {
         return
       }
       const filepath = await Clipboard.spillImage(content)
-      insertFileReference(filepath)
+      insertFileReference(filepath, content.mime)
       toast.show({ message: t("tui.paste.image.fallback_path"), variant: "warning", duration: 5000 })
       return
     }

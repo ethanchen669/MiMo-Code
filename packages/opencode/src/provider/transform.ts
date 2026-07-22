@@ -641,7 +641,8 @@ function providerImageCap(model: Provider.Model): number {
       model.id.includes("anthropic")
     if (routesToAnthropic) return DEFAULT_MAX_IMAGE_BYTES
   }
-  return Infinity
+  // Non-Anthropic providers (e.g., xiaomi/mimo-v2.5 via openai-compatible, openai, google, grok)
+  return 20 * 1024 * 1024 // 20MB — standard vision API limit
 }
 
 // Two responsibilities:
