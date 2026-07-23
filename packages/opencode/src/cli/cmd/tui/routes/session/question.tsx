@@ -7,12 +7,14 @@ import { selectedForeground, tint, useTheme } from "../../context/theme"
 import { useLanguage } from "../../context/language"
 import type { QuestionAnswer, QuestionRequest } from "@mimo-ai/sdk/v2"
 import { useSDK } from "../../context/sdk"
+import { useLocal } from "../../context/local"
 import { SplitBorder } from "../../component/border"
 import { useTextareaKeybindings } from "../../component/textarea-keybindings"
 import { useDialog } from "../../ui/dialog"
 
 export function QuestionPrompt(props: { request: QuestionRequest }) {
   const sdk = useSDK()
+  const local = useLocal()
   const { theme } = useTheme()
   const keybind = useKeybind()
   const bindings = useTextareaKeybindings()
@@ -85,6 +87,16 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
       setStore("custom", inputs)
     }
     if (single()) {
+      // Eagerly switch agent for plan_exit/plan_enter before the server reply
+      // to prevent the race where question.replied fires before message.created,
+      // causing Prompt remount to briefly bounce back to plan mode.
+      const qkey = props.request.questions[0]?.key
+      const yes = store.selected === 0
+      if (qkey === "plan_exit" && yes) {
+        local.agent.set("build")
+      } else if (qkey === "plan_enter" && yes) {
+        local.agent.set("plan")
+      }
       void sdk.client.question.reply({
         requestID: props.request.id,
         answers: [[answer]],
