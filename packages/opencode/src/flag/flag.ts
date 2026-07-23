@@ -81,6 +81,12 @@ export const Flag = {
   // every tool auto-approves unless the user explicitly denied it.
   MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS: truthy("MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS"),
   MIMOCODE_DISABLE_DEFAULT_PLUGINS: truthy("MIMOCODE_DISABLE_DEFAULT_PLUGINS"),
+
+  // Defaults to false (hot-reload enabled). When enabled, file-based plugins
+  // and hooks are loaded once on startup and never reloaded from disk during
+  // the session — preventing runtime plugin replacement attacks where an
+  // attacker swaps a security-critical plugin file mid-session.
+  MIMOCODE_DISABLE_PLUGIN_HOT_RELOAD: truthy("MIMOCODE_DISABLE_PLUGIN_HOT_RELOAD"),
   MIMOCODE_DISABLE_LSP_DOWNLOAD: truthy("MIMOCODE_DISABLE_LSP_DOWNLOAD"),
   MIMOCODE_ENABLE_EXPERIMENTAL_MODELS: truthy("MIMOCODE_ENABLE_EXPERIMENTAL_MODELS"),
   MIMOCODE_DISABLE_AUTOCOMPACT: truthy("MIMOCODE_DISABLE_AUTOCOMPACT"),

@@ -516,6 +516,11 @@ export const layer = Layer.effect(
     // avoid stat storms on hot trigger paths.
     const freshFileHooks = Effect.gen(function* () {
       const fh = yield* InstanceState.get(fileHookState)
+
+      // When hot-reload is disabled, never check for staleness — first load
+      // is the only load. This prevents runtime plugin replacement attacks.
+      if (Flag.MIMOCODE_DISABLE_PLUGIN_HOT_RELOAD) return fh
+
       const now = Date.now()
       if (now - fh.lastCheck.value < FILE_HOOK_CHECK_INTERVAL_MS) return fh
       fh.lastCheck.value = now

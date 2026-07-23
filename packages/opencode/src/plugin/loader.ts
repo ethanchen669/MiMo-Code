@@ -10,6 +10,13 @@ import {
 } from "./shared"
 import { ConfigPlugin } from "@/config/plugin"
 import { InstallationVersion } from "@/installation/version"
+import { computeFileHash, verifyIntegrity } from "./integrity"
+import { Flag } from "@/flag/flag"
+import { Log } from "@/util"
+import { fileURLToPath } from "url"
+import { existsSync } from "fs"
+
+const log = Log.create({ service: "plugin.loader" })
 
 export namespace PluginLoader {
   // A normalized plugin declaration derived from config before any filesystem or npm work happens.
@@ -117,6 +124,19 @@ export namespace PluginLoader {
 
   // Import the resolved module only after all earlier validation has succeeded.
   export async function load(row: Resolved): Promise<{ ok: true; value: Loaded } | { ok: false; error: unknown }> {
+    // Verify integrity before importing — prevents runtime plugin replacement
+    // attacks where an attacker swaps a plugin file on disk between sessions.
+    const integrityCheck = runIntegrityCheck(row.entry)
+    if (!integrityCheck.ok) {
+      log.warn("plugin integrity check failed, rejecting load", {
+        path: row.entry,
+        spec: row.spec,
+        hash: integrityCheck.hash,
+        reason: integrityCheck.reason,
+      })
+      return { ok: false, error: new Error(`Plugin ${row.spec} integrity check failed: ${integrityCheck.reason}`) }
+    }
+
     let mod
     try {
       mod = await import(row.entry)
@@ -125,6 +145,41 @@ export namespace PluginLoader {
     }
     if (!mod) return { ok: false, error: new Error(`Plugin ${row.spec} module is empty`) }
     return { ok: true, value: { ...row, mod } }
+  }
+
+  /**
+   * Run pre-import integrity verification on a plugin file.
+   *
+   * Computes the SHA-256 hash of the file and compares against a known-good
+   * hash when available. On first load the hash is recorded; on subsequent
+   * loads a mismatch blocks the import.
+   *
+   * The check is only meaningful for file:// plugin entries whose underlying
+   * file exists at check time — npm/bundled entries cannot be hashed this way
+   * and always pass.
+   */
+  function runIntegrityCheck(entry: string): { ok: true; hash: string } | { ok: false; hash?: string; reason: string } {
+    const fsPath = entry.startsWith("file://") ? fileURLToPath(entry) : entry
+
+    // Skip non-file entries (npm packages, bundled code)
+    if (!existsSync(fsPath)) return { ok: true, hash: "n/a" }
+
+    let hash: string
+    try {
+      hash = computeFileHash(fsPath)
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      log.warn("plugin integrity: cannot read file for hashing", { path: fsPath, error: msg })
+      return { ok: true, hash: "error" }
+    }
+
+    const result = verifyIntegrity(entry)
+
+    if (!result.verified) {
+      return { ok: false, hash, reason: "hash_mismatch" }
+    }
+
+    return { ok: true, hash }
   }
 
   // Run one candidate through the full pipeline: resolve, optionally surface a missing entry,
