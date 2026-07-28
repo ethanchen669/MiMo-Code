@@ -302,6 +302,11 @@ e2e_run_all() {
     e2e_f_compose_memory
     e2e_g_binary_version
     e2e_h_config_valid
+    e2e_i_prewalk_commands_exist
+    e2e_j_prewalk_agent_models
+    e2e_k_prewalk_command_routing
+    e2e_l_prewalk_executor_dispatch
+    e2e_m_prewalk_free_switch
   )
 
   local scenarios=()
@@ -318,11 +323,14 @@ e2e_run_all() {
     compose)
       scenarios=(e2e_c_compose_dispatch e2e_d_compose_edit_docs e2e_e_compose_blocks_src e2e_f_compose_memory)
       ;;
+    prewalk)
+      scenarios=(e2e_i_prewalk_commands_exist e2e_j_prewalk_agent_models e2e_k_prewalk_command_routing e2e_l_prewalk_executor_dispatch e2e_m_prewalk_free_switch)
+      ;;
     meta)
       scenarios=(e2e_g_binary_version e2e_h_config_valid)
       ;;
     *)
-      echo "ERROR: unknown suite: $suite (valid: all, plan, build, compose, meta)"
+      echo "ERROR: unknown suite: $suite (valid: all, plan, build, compose, prewalk, meta)"
       return 1
       ;;
   esac
@@ -345,9 +353,9 @@ e2e_run_all() {
   echo "Result: $pass/$total passed"
   echo "════════════════════════════════════════"
 
-  # Accept 7/8 as passing — scenarios D/E are known-non-deterministic in
+  # Accept 12/13 as passing — scenarios D/E are known-non-deterministic in
   # compose mode with deepseek-v4-pro (see Known-flaky marker above).
-  [[ $total -eq 8 ]] && [[ $pass -ge 7 ]] && return 0
+  [[ $total -eq 13 ]] && [[ $pass -ge 12 ]] && return 0
   [[ $pass -eq $total ]]
 }
 
@@ -357,4 +365,143 @@ e2e_run_all() {
 # non-compose paths and compose.txt insisting model self-restrain. The model
 # retries blocked operations and sometimes a subsequent attempt succeeds.
 # This is a known model behavior issue (not a framework bug), inherited from
+
+# ---- Scenario I: prewalk command exists ----
+e2e_i_prewalk_commands_exist() {
+  local cmd_dir="$HOME/.config/mimocode/commands"
+  local agent_dir="$HOME/.config/mimocode/agents"
+  local missing=0
+
+  for f in prewalk.md pw-go.md pw-revise.md pw-status.md pw-off.md; do
+    if [[ ! -f "$cmd_dir/$f" ]]; then
+      echo "FAIL: missing command $f"
+      missing=1
+    fi
+  done
+
+  for f in prewalk-frontier.md prewalk-executor.md; do
+    if [[ ! -f "$agent_dir/$f" ]]; then
+      echo "FAIL: missing agent $f"
+      missing=1
+    fi
+  done
+
+  if [[ $missing -eq 0 ]]; then
+    echo "PASS: all 5 commands + 2 agents present"
+    return 0
+  fi
+  return 1
+}
+
+# ---- Scenario J: prewalk agent models configured ----
+e2e_j_prewalk_agent_models() {
+  local agent_dir="$HOME/.config/mimocode/agents"
+
+  local frontier_model
+  frontier_model=$(grep '^model:' "$agent_dir/prewalk-frontier.md" 2>/dev/null | head -1 | awk '{print $2}')
+  if [[ -z "$frontier_model" ]]; then
+    echo "FAIL: prewalk-frontier.md missing model:"
+    return 1
+  fi
+
+  local executor_model
+  executor_model=$(grep '^model:' "$agent_dir/prewalk-executor.md" 2>/dev/null | head -1 | awk '{print $2}')
+  if [[ -z "$executor_model" ]]; then
+    echo "FAIL: prewalk-executor.md missing model:"
+    return 1
+  fi
+
+  if [[ "$frontier_model" == "$executor_model" ]]; then
+    echo "FAIL: frontier and executor use same model ($frontier_model) — no cost savings"
+    return 1
+  fi
+
+  echo "PASS: frontier=$frontier_model executor=$executor_model (different models)"
+  return 0
+}
+
+# ---- Scenario K: prewalk command agent routing ----
+e2e_k_prewalk_command_routing() {
+  local cmd_dir="$HOME/.config/mimocode/commands"
+
+  local prewalk_agent pw_go_agent pw_revise_agent pw_status_agent pw_off_agent
+  prewalk_agent=$(grep '^agent:' "$cmd_dir/prewalk.md" 2>/dev/null | awk '{print $2}')
+  pw_go_agent=$(grep '^agent:' "$cmd_dir/pw-go.md" 2>/dev/null | awk '{print $2}')
+  pw_revise_agent=$(grep '^agent:' "$cmd_dir/pw-revise.md" 2>/dev/null | awk '{print $2}')
+  pw_status_agent=$(grep '^agent:' "$cmd_dir/pw-status.md" 2>/dev/null | awk '{print $2}')
+  pw_off_agent=$(grep '^agent:' "$cmd_dir/pw-off.md" 2>/dev/null | awk '{print $2}')
+
+  if [[ "$prewalk_agent" != "prewalk-frontier" ]]; then
+    echo "FAIL: /prewalk agent=$prewalk_agent (expected prewalk-frontier)"
+    return 1
+  fi
+  if [[ "$pw_go_agent" != "build" ]]; then
+    echo "FAIL: /pw-go agent=$pw_go_agent (expected build)"
+    return 1
+  fi
+  if [[ "$pw_revise_agent" != "prewalk-frontier" ]]; then
+    echo "FAIL: /pw-revise agent=$pw_revise_agent (expected prewalk-frontier)"
+    return 1
+  fi
+  if [[ "$pw_status_agent" != "build" ]]; then
+    echo "FAIL: /pw-status agent=$pw_status_agent (expected build)"
+    return 1
+  fi
+  if [[ "$pw_off_agent" != "build" ]]; then
+    echo "FAIL: /pw-off agent=$pw_off_agent (expected build)"
+    return 1
+  fi
+
+  echo "PASS: all 5 commands routed to correct agents"
+  return 0
+}
+
+# ---- Scenario L: prewalk executor agent callable ----
+e2e_l_prewalk_executor_dispatch() {
+  # Verify prewalk-executor agent is registered and callable via mimo run
+  local tmpjson="$E2E_TMPDIR/prewalk-exec-test.json"
+  local test_dir="$E2E_TMPDIR/prewalk-exec"
+  rm -rf "$test_dir"
+  mkdir -p "$test_dir"
+
+  "$MIMOCODE_BIN" run --agent prewalk-executor --format json \
+    "Create a file at $test_dir/hello.txt containing the text 'prewalk-executor works'. Then verify the file exists and contains the correct text." \
+    > "$tmpjson" 2>&1
+
+  # Check if the file was created
+  if [[ ! -f "$test_dir/hello.txt" ]]; then
+    echo "FAIL: prewalk-executor did not create hello.txt"
+    return 1
+  fi
+
+  # Check content
+  local content
+  content=$(cat "$test_dir/hello.txt" 2>/dev/null)
+  if echo "$content" | grep -q "prewalk-executor works"; then
+    echo "PASS: prewalk-executor agent is callable and produced correct output"
+    return 0
+  fi
+
+  echo "FAIL: hello.txt content mismatch: $content"
+  return 1
+}
+
+# ---- Scenario M: prewalk-frontier in FREE_SWITCH_GROUP ----
+e2e_m_prewalk_free_switch() {
+  local source_dir="$HOME/.local/share/mimocode/source/MiMo-Code"
+  local local_tsx="$source_dir/packages/opencode/src/cli/cmd/tui/context/local.tsx"
+
+  if [[ ! -f "$local_tsx" ]]; then
+    echo "SKIP: source not available"
+    return 0
+  fi
+
+  if grep -q "prewalk-frontier" "$local_tsx" 2>/dev/null; then
+    echo "PASS: prewalk-frontier in FREE_SWITCH_GROUP"
+    return 0
+  fi
+
+  echo "FAIL: prewalk-frontier not in FREE_SWITCH_GROUP"
+  return 1
+}
 # the MiniMax-M3 compose era. Accept 3/4 compose tests or 7/8 total as passing.

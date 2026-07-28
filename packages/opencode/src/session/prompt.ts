@@ -2867,6 +2867,29 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             agentID: agentID ?? "main",
           })
 
+          // Context inheritance for subagents with contextMode="full": prepend
+          // parent main-agent messages (up to the watermark) so the subagent
+          // inherits the parent's conversation context. This replaces the
+          // ForkContext mechanism that was never populated for spawnSubagent.
+          if (agentID && agentID !== "main" && !session.contextFrom) {
+            const actorRec = yield* actorRegistry.get(sessionID, agentID).pipe(
+              Effect.orElseSucceed(() => undefined),
+            )
+            if (actorRec?.contextMode === "full") {
+              const parentMsgs = yield* MessageV2.filterCompactedEffect(sessionID, {
+                agentID: "main",
+              })
+              const wm = actorRec.contextWatermark
+              if (wm) {
+                const wmIdx = parentMsgs.findIndex((m) => m.info.id === wm)
+                const truncated = wmIdx >= 0 ? parentMsgs.slice(0, wmIdx + 1) : parentMsgs
+                msgs = [...truncated, ...msgs]
+              } else {
+                msgs = [...parentMsgs, ...msgs]
+              }
+            }
+          }
+
           let lastUser: MessageV2.User | undefined
           let lastAssistant: MessageV2.Assistant | undefined
           let lastFinished: MessageV2.Assistant | undefined
@@ -3370,21 +3393,19 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
             // Fork path: read frozen ForkContext from Actor service (late-bound via
             // spawnRef to break the Actor → SessionPrompt → Actor layer cycle).
-            // If forkCtx is missing (race / cleanup bug / spawn skipped), fail the
-            // actor so the next prune turn can spawn a fresh fork.
+            // If forkCtx is missing (subagent context:full without ForkContext),
+            // fall through to the normal path — parent messages were already
+            // prepended to `msgs` in the contextMode="full" check above.
             if (isForkAgent) {
               const forkCtxEffect = spawnRef.current?.getForkContext(lastUser.agentID!)
               const forkCtx = forkCtxEffect ? yield* forkCtxEffect : undefined
               if (!forkCtx) {
-                yield* slog.warn("fork agent runLoop: missing forkContext, failing actor", {
+                yield* slog.info("fork agent: no forkContext, using normal path with parent messages", {
                   sessionID,
                   agentID: lastUser.agentID,
                 })
-                yield* actorRegistry
-                  .updateStatus(sessionID, lastUser.agentID!, { status: "idle", lastOutcome: "failure", lastError: "missing fork context" })
-                  .pipe(Effect.ignore)
-                return "break" as const
-              }
+                // Fall through to normal path — msgs already includes parent messages
+              } else {
               const ownNew = msgs.filter(
                 (m) => m.info.id > forkCtx.watermarkMsgID && m.info.agentID === lastUser.agentID,
               )
@@ -3574,6 +3595,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   .pipe(Effect.ignore)
               }
               return "continue" as const
+              }
             }
 
             const [skills, env, instructions] = yield* Effect.all([

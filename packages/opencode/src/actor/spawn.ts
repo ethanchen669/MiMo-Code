@@ -1,6 +1,7 @@
 import { Effect, Deferred, Context, Fiber, Layer, Scope, Cause, Schedule } from "effect"
 import type { SessionID, MessageID } from "@/session/schema"
 import type { ProviderID, ModelID } from "@/provider/schema"
+import { Provider } from "@/provider"
 import type { Tool as AITool, ModelMessage } from "ai"
 import { Session } from "@/session"
 import { SessionPrompt } from "@/session/prompt"
@@ -746,6 +747,11 @@ export const layer = Layer.effect(
       if (input.forkContext) {
         forkContexts.set(actorID, input.forkContext)
       }
+      // Note: when context="full" and no forkContext is provided (the normal
+      // case for actor run --context full), we don't build a ForkContext here.
+      // Instead, prompt.ts loads parent messages directly via the actor
+      // registry's contextMode/contextWatermark fields. This avoids the need
+      // for Provider.Service in the Actor layer.
 
       // Auto-inject return-format instruction for non-specialized subagents.
       // Excluded: agents with hardcoded `prompt` (explore/title/summary — own

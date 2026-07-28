@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # verify.sh — Run E2E test suite, aggregate pass/fail, write report
-# Usage: verify.sh [--suite all|plan|compose|build|meta] [--report json|text]
+# Usage: verify.sh [--suite all|plan|compose|build|prewalk|meta] [--report json|text]
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,7 +16,7 @@ while [[ $# -gt 0 ]]; do
     --report=*) REPORT_FORMAT="${1#*=}" ;;
     --report)   REPORT_FORMAT="$2"; shift ;;
     -h|--help)
-      echo "Usage: verify.sh [--suite all|plan|compose|build|meta] [--report json|text]"
+      echo "Usage: verify.sh [--suite all|plan|compose|build|prewalk|meta] [--report json|text]"
       exit 0 ;;
     *) mimo_error "unknown arg: $1"; exit 2 ;;
   esac
