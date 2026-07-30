@@ -70,7 +70,7 @@ except:
 e2e_a_plan_blocks_edit() {
   echo "# src file" > "$E2E_TMPDIR/test-a.ts"
   local out
-  out="$(timeout 45 "$MIMOCODE_BIN" run --agent plan -m "anthropic-proxy/minimax/MiniMax-M3" --format json --dir "$E2E_TMPDIR" "请用 edit 工具把 $E2E_TMPDIR/test-a.ts 第一行改成 '# hacked'")"
+  out="$(timeout 45 "$MIMOCODE_BIN" run --agent plan -m "openai-proxy/minimax/MiniMax-M3" --format json --dir "$E2E_TMPDIR" "请用 edit 工具把 $E2E_TMPDIR/test-a.ts 第一行改成 '# hacked'")"
   local edits_tried
   edits_tried="$(echo "$out" | python3 -c "
 import json, sys
@@ -103,7 +103,7 @@ print(count)
 e2e_b_build_allows_edit() {
   echo "# src file" > "$E2E_TMPDIR/test-b.ts"
   local out
-  out="$(timeout 45 "$MIMOCODE_BIN" run --agent build -m "anthropic-proxy/xiaomi/mimo-v2.5-pro" --format json --dir "$E2E_TMPDIR" "请用 edit 工具把 $E2E_TMPDIR/test-b.ts 第一行改成 '# modified by build'")"
+  out="$(timeout 45 "$MIMOCODE_BIN" run --agent build -m "openai-proxy/xiaomi/mimo-v2.5-pro" --format json --dir "$E2E_TMPDIR" "请用 edit 工具把 $E2E_TMPDIR/test-b.ts 第一行改成 '# modified by build'")"
   local current
   current="$(cat "$E2E_TMPDIR/test-b.ts" 2>/dev/null || echo "")"
   if [[ "$current" == "# modified by build" ]]; then

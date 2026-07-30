@@ -30,6 +30,37 @@ NEVER decide to skip a skill based on its description alone. The skip conditions
 The execution flow is always a complete closed loop — every task must pass through the appropriate skill(s) before implementation begins.
 </EXTREMELY-IMPORTANT>
 
+## Grill Gate
+
+When a compose session begins (before Brainstorm), check whether the project has domain documentation:
+
+1. **Read** `<repo_root>/CONTEXT.md`. If it exists and was created/modified within this session, domain docs are fresh — skip directly to Brainstorm.
+
+2. **If CONTEXT.md does not exist**, use `compose:ask` to offer:
+   - header: "Domain Modeling"
+   - question: "这个项目还没有领域文档(CONTEXT.md + ADRs)。是否需要先做一轮 grill-with-docs深度领域访谈来建立项目术语表和架构决策记录？"
+   - options:
+     - label: "开始 grill", description: "先建立领域文档，后续 brainstorm/plan/implementer都会受益"
+     - label: "跳过", description: "现在不需要，直接进入 brainstorm"
+
+3. **If user opts in**:
+   a. Load the `grill-with-docs` skill: `skill grill-with-docs`
+   b. Read the project context (files, structure, recent commits) to understand the domain
+   c. Conduct a structured interview: ask5-7 domain-specific questions one at a time via `compose:ask` — focus on terminology, architecture decisions, constraints
+   d. Compile the complete Q&A into a transcript
+   e. **Dispatch a build-mode subagent** to write the domain artifacts:
+      - Prompt the subagent to read the interview transcript, write CONTEXT.md to repo root, write docs/adr/ files for each architecture decision
+      - Use `actor run general` with the build model
+   f. Verify CONTEXT.md and ADRs were created, then proceed to Brainstorm
+
+4. **If user skips**: Proceed directly to Brainstorm.
+
+When grill-gate completes (or is skipped), proceed to:
+
+**Brainstorm Gate:** Invoke `compose:brainstorm` skill. Brainstorm should check for CONTEXT.md and use domain terminology if available.
+
+After brainstorm completes, proceed to the Plan→Execution Bridge below.
+
 ## Asking the User
 
 Route every decision, clarification, or approval through the `compose:ask` skill (it drives the `question` tool). Never stop the loop with a natural-language question — that ends your turn without finishing the task.

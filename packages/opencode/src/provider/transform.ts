@@ -489,7 +489,41 @@ function normalizeContentArray(msgs: ModelMessage[]): ModelMessage[] {
 
 function unsupportedParts(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
   return msgs.map((msg) => {
-    if (msg.role !== "user" || !Array.isArray(msg.content)) return msg
+    if (!Array.isArray(msg.content)) return msg
+
+    // Tool-result images live on tool/assistant messages, not user messages.
+    // When the model does not support image input, strip image-data/file-data/media
+    // entries from tool-result output values to prevent 400 errors.
+    if ((msg.role === "tool" || msg.role === "assistant") && !model.capabilities.input.image) {
+      const content = msg.content.map((part: any) => {
+        if (part?.type !== "tool-result") return part
+        const output = part.output
+        if (!output || output.type !== "content" || !Array.isArray(output.value)) return part
+        return {
+          ...part,
+          output: {
+            ...output,
+            value: output.value.map((entry: any) => {
+              if (!entry || typeof entry !== "object") return entry
+              const isImageEntry =
+                entry.type === "image-data" ||
+                entry.type === "media" ||
+                (entry.type === "file-data" &&
+                  typeof entry.mediaType === "string" &&
+                  entry.mediaType.startsWith("image/"))
+              if (!isImageEntry) return entry
+              return {
+                type: "text",
+                text: "[Image omitted: this model does not support image input.]",
+              }
+            }),
+          },
+        }
+      })
+      return { ...msg, content }
+    }
+
+    if (msg.role !== "user") return msg
 
     const filtered = msg.content.map((part) => {
       if (part.type !== "file" && part.type !== "image") return part

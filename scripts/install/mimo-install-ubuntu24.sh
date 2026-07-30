@@ -285,7 +285,7 @@ tarball_agents = {
     'plan': {
         'description': "Read-only analysis mode for code exploration and solution design",
         'mode': "primary",
-        'model': "anthropic-proxy/minimax/MiniMax-M3"
+        'model': "openai-proxy/minimax/MiniMax-M3"
     },
     'security': {
         'description': "Security analysis mode. Dispatches to security-reviewer and other security specialists for vulnerability analysis, penetration testing, and threat modeling.",
