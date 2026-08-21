@@ -1765,7 +1765,6 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       }
 
       if (
-        !useGPTTools &&
         useMcpToolSearch &&
         input.model.capabilities.toolcall &&
         mcpCatalog.current.entries.length > 0 &&
@@ -1773,7 +1772,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       ) {
         activeTools.add(MCP_TOOL_SEARCH_ID)
       }
-      if (!useGPTTools) loadedMcpTools.forEach((name) => activeTools.add(name))
+      loadedMcpTools.forEach((name) => activeTools.add(name))
 
       // MCP Tool Search keeps full schemas out of the outer model tool list;
       // it is a context-budget optimization, not an authorization boundary.

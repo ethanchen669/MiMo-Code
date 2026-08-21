@@ -239,7 +239,7 @@ describe("tool.bash git identity floor", () => {
     }
   })
 
-  each("injects NO GIT_* vars for a non-git project (worktree=/), leaving authorship to git", async () => {
+  each("injects NO GIT_* vars for a non-git project, leaving authorship to git", async () => {
     const saved = savedEnv()
     restoreEnv({
       GIT_AUTHOR_NAME: undefined,
@@ -248,12 +248,12 @@ describe("tool.bash git identity floor", () => {
       GIT_COMMITTER_EMAIL: undefined,
     })
     try {
-      // outsideGit -> a truly non-git project -> Instance.worktree === "/".
+      // outsideGit -> a truly non-git project -> the worktree is the project directory itself.
       await using tmp = await tmpdir({ outsideGit: true })
       await Instance.provide({
         directory: tmp.path,
         fn: async () => {
-          expect(Instance.worktree).toBe("/")
+          expect(Instance.worktree).toBe(tmp.path)
           const bash = await initBash()
           const result = await Effect.runPromise(
             bash.execute({ command: printGitEnv, description: "print git env" }, ctx),

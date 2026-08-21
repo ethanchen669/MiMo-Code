@@ -29,8 +29,8 @@ export const LARGE_MODEL_OUTPUT_TOKEN_MAX = 128_000
 
 export function usesLargeModelDefaults(model: { id: string; providerID: string; api: { id: string } }) {
   if (["mimo", "xiaomi"].includes(model.providerID.toLowerCase())) return true
-  return [model.id, model.api.id].some((id) =>
-    ["claude", "gpt", "mimo"].some((name) => id.toLowerCase().includes(name)),
+  return [model.id, model.api.id].filter(Boolean).some((id) =>
+    ["claude", "gpt", "mimo"].some((name) => (id as string).toLowerCase().includes(name)),
   )
 }
 

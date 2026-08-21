@@ -106,3 +106,22 @@ void Log.init({
 })
 
 initProjectors()
+
+// Pre-seed the ripgrep binary into the isolated test cache so rg-dependent
+// tests (grep/glob/skill) don't re-download ~1.8MB from GitHub on every run.
+// Must run AFTER the src/ imports above: global/index.ts wipes the cache dir
+// on import when the version file mismatches, which would delete an earlier
+// seed. os.homedir() still returns the real home here — Bun caches it at
+// process start, before HOME was pointed at the test home. Falls through
+// silently when the binary isn't cached locally yet; first use then downloads
+// it as before.
+{
+  const realRg = path.join(os.homedir(), ".cache", "mimocode", "bin", "rg")
+  try {
+    await fs.mkdir(path.join(cacheDir, "bin"), { recursive: true })
+    await fs.copyFile(realRg, path.join(cacheDir, "bin", "rg"))
+    await fs.chmod(path.join(cacheDir, "bin", "rg"), 0o755)
+  } catch {
+    // not cached locally — Ripgrep layer downloads on first use
+  }
+}
