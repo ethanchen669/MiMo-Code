@@ -5,11 +5,10 @@ import os from "os"
 import fs from "fs/promises"
 import path from "path"
 import { evalScript } from "../../src/workflow/sandbox"
-import { jsonSchema } from "ai"
 import { Agent } from "../../src/agent/agent"
 import { Truncate, Tool } from "../../src/tool"
 import { ToolScriptTool, renderToolScriptDeclarations } from "../../src/tool/tool-script"
-import { toolScriptRegistry, toolScriptMcp, TOOL_SCRIPT_EXCLUDED } from "../../src/tool/tool-script-ref"
+import { toolScriptRegistry, TOOL_SCRIPT_EXCLUDED } from "../../src/tool/tool-script-ref"
 import { Instance } from "../../src/project/instance"
 
 describe("sandbox non-deterministic mode", () => {
@@ -90,12 +89,16 @@ async function runToolScript(
   code: string,
   defs: Tool.Def[],
   abort?: AbortSignal,
-  opts?: { mcp?: Record<string, any>; ask?: () => Effect.Effect<void>; maxToolCalls?: number; timeoutSeconds?: number },
+  opts?: {
+    ask?: () => Effect.Effect<void>
+    maxToolCalls?: number
+    timeoutMs?: number
+    toolWhitelist?: string[]
+    mcp?: Record<string, any>
+  },
 ) {
   const prev = toolScriptRegistry.current
-  const prevMcp = toolScriptMcp.current
   toolScriptRegistry.current = () => Effect.succeed(defs)
-  toolScriptMcp.current = opts?.mcp ? () => Effect.succeed(opts.mcp!) : undefined
   try {
     return await Instance.provide({
       directory: tmp,
@@ -107,7 +110,7 @@ async function runToolScript(
             {
               code,
               ...(opts?.maxToolCalls !== undefined && { max_tool_calls: opts.maxToolCalls }),
-              ...(opts?.timeoutSeconds !== undefined && { timeout_seconds: opts.timeoutSeconds }),
+              ...(opts?.timeoutMs !== undefined && { timeout: opts.timeoutMs }),
             },
             {
               sessionID: "ses_test" as any,
@@ -115,6 +118,10 @@ async function runToolScript(
               agent: "build",
               abort: abort ?? new AbortController().signal,
               callID: "call_test",
+              extra: {
+                ...(opts?.toolWhitelist ? { toolWhitelist: opts.toolWhitelist } : {}),
+                ...(opts?.mcp ? { execMcp: { current: opts.mcp } } : {}),
+              },
               messages: [],
               metadata: () => Effect.void,
               ask: opts?.ask ?? (() => Effect.void),
@@ -125,11 +132,33 @@ async function runToolScript(
     })
   } finally {
     toolScriptRegistry.current = prev
-    toolScriptMcp.current = prevMcp
   }
 }
 
-describe("tool_script", () => {
+describe("exec", () => {
+  test("declares the exec timeout in milliseconds", async () => {
+    const info = await runtime.runPromise(ToolScriptTool)
+    const def = await runtime.runPromise(Tool.init(info))
+    const parsed = def.parameters.parse({ code: "return 1", timeout: 120_000 })
+
+    expect(parsed.timeout).toBe(120_000)
+    expect(def.description).toContain("`timeout` is always measured in milliseconds")
+    expect(def.description).toContain("600000 milliseconds")
+  })
+
+  test("cannot call tools outside the actor runtime whitelist", async () => {
+    const result = await runToolScript(
+      `return await tools.echo({ value: "blocked" })`,
+      [fakeDef("echo", async () => "unexpected")],
+      undefined,
+      { toolWhitelist: ["exec"] },
+    )
+
+    expect(result.metadata.status).toBe("code_error")
+    expect(result.output).toContain("echo")
+    expect(result.output).not.toContain("unexpected")
+  })
+
   test("executes code, calls tools, returns aggregated result", async () => {
     const seen: string[] = []
     const defs = [
@@ -151,6 +180,29 @@ describe("tool_script", () => {
     expect(result.output).toContain("echo:c")
     expect(seen.toSorted()).toEqual(["a", "b", "c"])
     expect(result.metadata.toolCalls).toBe(3)
+  })
+
+  test("terminal metadata keeps the per-tool counts breakdown", async () => {
+    const defs = [
+      fakeDef("echo", async (args) => `echo:${args.value}`),
+      fakeDef("boom", async () => {
+        throw new Error("kapow")
+      }),
+    ]
+    const result = await runToolScript(
+      `
+      await tools.echo({ value: "a" })
+      await tools.echo({ value: "b" })
+      try { await tools.boom({}) } catch {}
+      return "done"
+      `,
+      defs,
+    )
+    expect(result.metadata.status).toBe("completed")
+    expect(result.metadata.counts).toEqual({
+      echo: { n: 2, errors: 0 },
+      boom: { n: 1, errors: 1 },
+    })
   })
 
   test("accepts TypeScript syntax (types stripped by transpiler)", async () => {
@@ -241,11 +293,11 @@ describe("tool_script", () => {
     expect(result.output).toContain("tool call budget exceeded (5 per execution)")
   })
 
-  test("timeout_seconds bounds compute time and the error names the budget", async () => {
-    const result = await runToolScript(`while (true) {}`, [], undefined, { timeoutSeconds: 1 })
+  test("timeout bounds compute time in milliseconds and the error names the budget", async () => {
+    const result = await runToolScript(`while (true) {}`, [], undefined, { timeoutMs: 100 })
     expect(result.metadata.status).toBe("timeout")
-    expect(result.output).toContain("1s of active compute")
-    expect(result.output).toContain("timeout_seconds")
+    expect(result.output).toContain("100ms of active compute")
+    expect(result.output).toContain("raise via timeout")
   }, 15_000)
 
   test("syntax error → code_error", async () => {
@@ -263,23 +315,119 @@ describe("tool_script", () => {
     expect(result.metadata.status).toBe("cancelled")
   }, 15_000)
 
-  test("excluded tools are not dispatchable", async () => {
-    const defs = [fakeDef("task", async () => "should never run")]
+  test("internal tools are excluded while Codex control-flow tools remain dispatchable", async () => {
+    const defs = [
+      fakeDef("task", async () => "task ran"),
+      fakeDef("mcp_tool_search", async () => "should never run"),
+    ]
     const result = await runToolScript(
-      `try { await tools.task({}) } catch (e) { return e.message }`,
+      `const task = await tools.task({});
+       const listed = ALL_TOOLS.some((tool) => tool.name === "mcp_tool_search");
+       try { await tools.mcp_tool_search({ query: "docs" }) } catch (e) { return { task: task.output, listed, error: e.message } }`,
       defs,
     )
-    expect(result.output).toContain("unknown tool: task")
+    expect(result.output).toContain('"task": "task ran"')
+    expect(result.output).toContain('"listed": false')
+    expect(result.output).toContain("unknown tool: mcp_tool_search")
   })
 
-  test("bash is excluded from the sandbox", async () => {
-    const defs = [fakeDef("bash", async () => "should never run")]
+  test("exec_command maps to bash while direct bash remains backward compatible", async () => {
+    const seen: Array<{ command: string; timeout: number; description: string }> = []
+    const parameters = z.object({
+      command: z.string(),
+      timeout: z.number(),
+      workdir: z.string().optional(),
+      description: z.string(),
+    })
+    const bash: Tool.Def<typeof parameters> = {
+      id: "bash",
+      description: "fake bash",
+      parameters,
+      execute: (args) => {
+        seen.push({ command: args.command, timeout: args.timeout, description: args.description })
+        return Effect.succeed({ title: args.description, output: `ran:${args.command}`, metadata: {} })
+      },
+    }
     const result = await runToolScript(
-      `try { await tools.bash({ value: "ls" }) } catch (e) { return e.message }`,
-      defs,
+      `return await Promise.all([
+        tools.bash({ command: "direct", timeout: 25000, description: "direct bash" }),
+        tools.exec_command({ cmd: "alias", yield_time_ms: 15000 }),
+      ])`,
+      [bash],
     )
     expect(result.metadata.status).toBe("completed")
-    expect(result.output).toContain("unknown tool: bash")
+    expect(result.metadata.toolCalls).toBe(2)
+    expect(result.output).toContain("ran:direct")
+    expect(result.output).toContain("ran:alias")
+    expect(seen).toEqual(expect.arrayContaining([
+      { command: "direct", timeout: 25000, description: "direct bash" },
+      { command: "alias", timeout: 15000, description: "alias" },
+    ]))
+  })
+
+  test("exec_command defaults yield_time_ms to 10000 ms", async () => {
+    const parameters = z.object({
+      command: z.string(),
+      timeout: z.number(),
+      workdir: z.string().optional(),
+      description: z.string(),
+    })
+    const bash: Tool.Def<typeof parameters> = {
+      id: "bash",
+      description: "fake bash",
+      parameters,
+      execute: (args) =>
+        Effect.succeed({ title: args.description, output: String(args.timeout), metadata: {} }),
+    }
+    const result = await runToolScript(`return await tools.exec_command({ cmd: "echo ok" })`, [bash])
+
+    expect(result.metadata.status).toBe("completed")
+    expect(result.output).toContain('"output": "10000"')
+  })
+
+  test("lists exec_command instead of bash in the code-mode catalog", async () => {
+    const result = await runToolScript(
+      `return ALL_TOOLS.map((tool) => tool.name)`,
+      [fakeDef("bash", async () => "x")],
+    )
+    expect(result.output).toContain('"exec_command"')
+    expect(result.output).not.toContain('"bash"')
+  })
+
+  test("supports parallel bash calls with millisecond timeouts", async () => {
+    const seen: Array<{ command: string; timeout?: number }> = []
+    const parameters = z.object({
+      command: z.string(),
+      description: z.string(),
+      workdir: z.string().optional(),
+      timeout: z.number().optional(),
+    })
+    const bash: Tool.Def<typeof parameters> = {
+      id: "bash",
+      description: "Runs a command with a timeout measured in milliseconds.",
+      parameters,
+      execute: (args) => {
+        seen.push({ command: args.command, timeout: args.timeout })
+        return Effect.succeed({ title: args.description, output: args.command, metadata: { timeout: args.timeout } })
+      },
+    }
+    const result = await runToolScript(
+      `const results = await Promise.allSettled([
+        tools.bash({ command: "git status --short --branch && git diff --check", description: "Confirm branch state and check diff whitespace", timeout: 120000 }),
+        tools.bash({ command: "bun test --timeout 30000", workdir: ${JSON.stringify(tmp)}, description: "Run the complete opencode test suite", timeout: 600000 }),
+        tools.bash({ command: "bun typecheck", workdir: ${JSON.stringify(tmp)}, description: "Run opencode TypeScript checks", timeout: 600000 }),
+      ]);
+      return results.map((x, i) => x.status === "fulfilled"
+        ? { index: i, output: x.value.output, metadata: x.value.metadata }
+        : { index: i, error: String(x.reason) });`,
+      [bash],
+    )
+
+    expect(result.metadata.status).toBe("completed")
+    expect(result.metadata.toolCalls).toBe(3)
+    expect(seen.map((item) => item.timeout).toSorted()).toEqual([120_000, 600_000, 600_000])
+    expect(result.output).toContain('"index": 2')
+    expect(result.output).toContain('"timeout": 600000')
   })
 
   test("concurrency is capped at 8", async () => {
@@ -306,7 +454,7 @@ describe("tool_script", () => {
     expect(peak).toBeGreaterThan(1)
   })
 
-  test("Date works inside tool_script guest", async () => {
+  test("Date works inside exec guest", async () => {
     const result = await runToolScript(`return typeof Date.now()`, [])
     expect(result.output).toContain("number")
   })
@@ -358,7 +506,7 @@ describe("tool_script", () => {
       [],
     )
     expect(result.metadata.status).toBe("completed")
-    expect(result.output).toContain("tools.write/tools.edit")
+    expect(result.output).toContain("tools.apply_patch")
   })
 
   test("files.readText reads worktree files raw (no line numbers)", async () => {
@@ -483,59 +631,133 @@ describe("tool_script", () => {
     expect(result.output).toContain('"tail": "after"')
     await fs.rm(nulFile, { force: true })
   })
+
+  test("discovers an MCP tool through ALL_TOOLS and dispatches its exact name", async () => {
+    const result = await runToolScript(
+      `const match = ALL_TOOLS.find((tool) => tool.name.includes("browser") && tool.name.includes("navigate"));
+       if (!match) return "not found";
+       const navigation = await tools[match.name]({ url: "https://example.com" });
+       return navigation.output`,
+      [],
+      undefined,
+      {
+        mcp: {
+          "chrome-devtools_browser-navigate": {
+            description: "Navigate a browser page to a URL",
+            inputSchema: z.object({ url: z.string() }),
+            execute: async (args: { url: string }) => ({
+              output: `navigated: ${args.url}`,
+              metadata: { mcp: { isError: false } },
+              attachments: [],
+            }),
+          },
+        },
+      },
+    )
+    expect(result.metadata.status).toBe("completed")
+    expect(result.output).toContain("navigated: https://example.com")
+  })
 })
 
-describe("tool_script MCP dispatch", () => {
+describe("renderToolScriptDeclarations", () => {
+  test("renders TS signatures and skips excluded tools", () => {
+    const defs = [
+      fakeDef("read", async () => "x"),
+      fakeDef("mcp_tool_search", async () => "x"),
+      fakeDef("task", async () => "x"),
+      fakeDef("question", async () => "x"),
+    ]
+    const text = renderToolScriptDeclarations(defs)
+    expect(text).toContain("read(input:")
+    expect(text).not.toContain("mcp_tool_search(input:")
+    expect(text).toContain("name: string; description: string")
+    expect(text).toContain("declare const ALL_TOOLS")
+    expect(text).toContain("task(input:")
+    expect(text).toContain("question(input:")
+    expect(text).toContain("declare const tools")
+  })
+
+  test("exclusion list covers recursive and internal tools but allows Codex nested tools", () => {
+    for (const id of ["exec", "mcp_tool_search", "invalid", "session", "workflow"]) {
+      expect(TOOL_SCRIPT_EXCLUDED.has(id)).toBe(true)
+    }
+    for (const id of ["bash", "task", "question", "actor", "skill", "plan_exit", "cron", "change_directory"]) {
+      expect(TOOL_SCRIPT_EXCLUDED.has(id)).toBe(false)
+    }
+  })
+
+  test("exposes exec_command instead of bash in code mode", () => {
+    const text = renderToolScriptDeclarations([fakeDef("bash", async () => "x")])
+    expect(text).toContain("exec_command(input:")
+    expect(text).toContain("Alias for bash")
+    expect(text).toContain("cmd: string")
+    expect(text).toContain("yield_time_ms?: number")
+    expect(text).not.toContain("command: string")
+    expect(text).not.toContain("timeout?: number")
+    expect(text).not.toContain("interactive?: boolean")
+    const declaration = text.split("\n").find((line) => line.includes("exec_command(input:"))
+    expect(declaration).not.toContain("description:")
+    expect(text).not.toContain("\n  bash(input:")
+  })
+
+})
+
+describe("exec MCP dispatch", () => {
+  // Mimics the SessionPrompt-wrapped MCP execute: resolves with the normalized
+  // {output, metadata, attachments} shape (permission/hooks/truncation already
+  // applied by the wrapper), rejects on tool failure.
   function fakeMcpTool(execute: (args: any) => Promise<any>) {
     return {
       description: "fake mcp tool",
-      inputSchema: jsonSchema({ type: "object", properties: { q: { type: "string" } } }),
+      inputSchema: z.object({}),
       execute,
     }
   }
 
-  test("MCP tool is callable; result content folds to text output", async () => {
-    const seen: any[] = []
+  test("MCP tool is callable and returns output text", async () => {
     const mcp = {
-      srv_search: fakeMcpTool(async (args) => {
-        seen.push(args)
-        return { content: [{ type: "text", text: "hit-1" }, { type: "text", text: "hit-2" }] }
-      }),
+      srv_search: fakeMcpTool(async (args) => ({
+        output: `found: ${args.query}`,
+        metadata: { mcp: { isError: false } },
+        attachments: [],
+      })),
     }
     const result = await runToolScript(
-      `const r = await tools.srv_search({ q: "x" }); return r.output`,
+      `const r = await tools.srv_search({ query: "hello" }); return r.output`,
       [],
       undefined,
       { mcp },
     )
     expect(result.metadata.status).toBe("completed")
-    expect(result.output).toContain("hit-1")
-    expect(result.output).toContain("hit-2")
-    expect(seen).toEqual([{ q: "x" }])
+    expect(result.output).toContain("found: hello")
   })
 
-  test("MCP call goes through permission ask", async () => {
-    const asked: string[] = []
+  test("structuredContent crosses into the guest as parsed `structured`", async () => {
     const mcp = {
-      srv_go: fakeMcpTool(async () => ({ content: [{ type: "text", text: "ok" }] })),
-    }
-    const result = await runToolScript(`return (await tools.srv_go({})).output`, [], undefined, {
-      mcp,
-      ask: () => {
-        asked.push("srv_go")
-        return Effect.void
-      },
-    })
-    expect(result.metadata.status).toBe("completed")
-    expect(asked).toContain("srv_go")
-  })
-
-  test("MCP isError result rejects catchably", async () => {
-    const mcp = {
-      srv_fail: fakeMcpTool(async () => ({
-        isError: true,
-        content: [{ type: "text", text: "server exploded" }],
+      srv_data: fakeMcpTool(async () => ({
+        output: "3 items",
+        metadata: { mcp: { isError: false, structuredContent: { items: [1, 2, 3], total: 3 } } },
+        attachments: [],
       })),
+    }
+    const result = await runToolScript(
+      `const r = await tools.srv_data({});
+       return { total: r.structured.total, doubled: r.structured.items.map((x) => x * 2) }`,
+      [],
+      undefined,
+      { mcp },
+    )
+    expect(result.metadata.status).toBe("completed")
+    expect(result.output).toContain('"total": 3')
+    expect(result.output).toContain("4")
+    expect(result.output).toContain("6")
+  })
+
+  test("MCP failure rejects catchably inside the guest", async () => {
+    const mcp = {
+      srv_fail: fakeMcpTool(async () => {
+        throw new Error("server exploded")
+      }),
     }
     const result = await runToolScript(
       `try { await tools.srv_fail({}) } catch (e) { return "caught: " + e.message }`,
@@ -547,76 +769,62 @@ describe("tool_script MCP dispatch", () => {
     expect(result.output).toContain("caught: srv_fail: server exploded")
   })
 
-  test("non-text MCP content is dropped with a note", async () => {
+  test("builtin id wins on collision with an MCP tool", async () => {
     const mcp = {
-      srv_img: fakeMcpTool(async () => ({
-        content: [
-          { type: "text", text: "caption" },
-          { type: "image", mimeType: "image/png", data: "aGVsbG8=" },
-        ],
-      })),
-    }
-    const result = await runToolScript(`return (await tools.srv_img({})).output`, [], undefined, { mcp })
-    expect(result.metadata.status).toBe("completed")
-    expect(result.output).toContain("caption")
-    expect(result.output).toContain("non-text attachment(s) dropped")
-  })
-
-  test("builtin tool id wins over a colliding MCP tool id", async () => {
-    const defs = [fakeDef("echo", async (args) => `builtin:${args.value}`)]
-    const mcp = {
-      echo: fakeMcpTool(async () => ({ content: [{ type: "text", text: "mcp-should-not-run" }] })),
-    }
-    const result = await runToolScript(`return (await tools.echo({ value: "v" })).output`, defs, undefined, { mcp })
-    expect(result.metadata.status).toBe("completed")
-    expect(result.output).toContain("builtin:v")
-    expect(result.output).not.toContain("mcp-should-not-run")
-  })
-
-  test("MCP calls count against the shared 50-call budget", async () => {
-    const mcp = {
-      srv_ping: fakeMcpTool(async () => ({ content: [{ type: "text", text: "pong" }] })),
+      echo: fakeMcpTool(async () => ({ output: "mcp version", metadata: {}, attachments: [] })),
     }
     const result = await runToolScript(
-      `for (let i = 0; i < 60; i++) await tools.srv_ping({}); return "done"`,
+      `const r = await tools.echo({ value: "x" }); return r.output`,
+      [fakeDef("echo", async () => "builtin version")],
+      undefined,
+      { mcp },
+    )
+    expect(result.output).toContain("builtin version")
+  })
+
+  test("attachments are dropped with a note", async () => {
+    const mcp = {
+      srv_img: fakeMcpTool(async () => ({
+        output: "here is your chart",
+        metadata: { mcp: { isError: false } },
+        attachments: [{ mime: "image/png", url: "data:image/png;base64,xxxx" }],
+      })),
+    }
+    const result = await runToolScript(
+      `const r = await tools.srv_img({}); return r.output`,
       [],
       undefined,
       { mcp },
     )
-    expect(result.metadata.status).toBe("budget_exceeded")
-  })
-})
-
-describe("renderToolScriptDeclarations", () => {
-  test("renders TS signatures and skips excluded tools", () => {
-    const defs = [
-      fakeDef("read", async () => "x"),
-      fakeDef("task", async () => "x"),
-      fakeDef("question", async () => "x"),
-    ]
-    const text = renderToolScriptDeclarations(defs)
-    expect(text).toContain("read(input:")
-    expect(text).not.toContain("task(input:")
-    expect(text).not.toContain("question(input:")
-    expect(text).toContain("declare const tools")
+    expect(result.output).toContain("here is your chart")
+    expect(result.output).toContain("non-text attachment(s) dropped")
   })
 
-  test("exclusion list covers agent control-flow tools and bash", () => {
-    for (const id of ["task", "question", "actor", "skill", "plan_enter", "plan_exit", "tool_script", "bash"]) {
-      expect(TOOL_SCRIPT_EXCLUDED.has(id)).toBe(true)
-    }
-  })
-
-  test("MCP tools are rendered into the declaration block", () => {
+  test("MCP calls count against the tool call budget", async () => {
     const mcp = {
-      srv_search: {
-        description: "Search the thing",
-        inputSchema: jsonSchema({ type: "object", properties: { q: { type: "string" } }, required: ["q"] }),
-        execute: async () => ({ content: [] }),
-      },
+      srv_a: fakeMcpTool(async () => ({ output: "a", metadata: {}, attachments: [] })),
     }
-    const text = renderToolScriptDeclarations([fakeDef("read", async () => "x")], mcp as any)
-    expect(text).toContain("srv_search(input: { q: string })")
-    expect(text).toContain("[MCP] Search the thing")
+    const result = await runToolScript(
+      `for (let i = 0; i < 3; i++) await tools.srv_a({}); return "done"`,
+      [],
+      undefined,
+      { mcp, maxToolCalls: 2 },
+    )
+    expect(result.metadata.status).not.toBe("completed")
+    expect(result.output).toContain("budget exceeded")
+  })
+
+  test("whitelist filters MCP tools too", async () => {
+    const mcp = {
+      srv_blocked: fakeMcpTool(async () => ({ output: "should not run", metadata: {}, attachments: [] })),
+    }
+    const result = await runToolScript(
+      `try { await tools.srv_blocked({}) } catch (e) { return "denied: " + e.message }`,
+      [],
+      undefined,
+      { mcp, toolWhitelist: ["exec"] },
+    )
+    expect(result.output).toContain("denied:")
+    expect(result.output).toContain("unknown tool")
   })
 })

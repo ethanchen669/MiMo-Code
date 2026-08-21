@@ -9,6 +9,10 @@ export type SearchResult = {
   reason: string
 }
 
+function isComposeSkill(skill: Pick<Skill.Info, "name">) {
+  return skill.name.startsWith("compose:")
+}
+
 function normalize(value: string) {
   return value.toLocaleLowerCase().trim()
 }
@@ -62,7 +66,7 @@ function tokenize(value: string) {
 }
 
 export function searchSkills(query: string, skills: Skill.Info[]): SearchResult[] {
-  const searchable = skills.filter((skill) => !skill.name.startsWith("compose:"))
+  const searchable = skills.filter((skill) => !isComposeSkill(skill))
   const exact = searchable
     .filter((skill) =>
       [skill.name, ...(skill.aliases ?? []), ...localizedAliases(skill)].some((value) =>

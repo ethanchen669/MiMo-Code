@@ -6,7 +6,13 @@ import type * as Provider from "./provider"
 import type * as ModelsDev from "./models"
 import { iife } from "@/util/iife"
 import { Flag } from "@/flag/flag"
-import { compressImage, DEFAULT_MAX_IMAGE_BYTES } from "./image"
+import {
+  compressImage,
+  DEFAULT_MAX_IMAGE_BYTES,
+  DEFAULT_MAX_IMAGE_DIMENSION,
+  imageDimensions,
+  supportsImageDimensions,
+} from "./image"
 
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]
 
@@ -19,7 +25,14 @@ function mimeToModality(mime: string): Modality | undefined {
 }
 
 export const OUTPUT_TOKEN_MAX = Flag.MIMOCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
-const MIMO_OUTPUT_TOKEN_MAX = 128_000
+export const LARGE_MODEL_OUTPUT_TOKEN_MAX = 128_000
+
+export function usesLargeModelDefaults(model: { id: string; providerID: string; api: { id: string } }) {
+  if (["mimo", "xiaomi"].includes(model.providerID.toLowerCase())) return true
+  return [model.id, model.api.id].some((id) =>
+    ["claude", "gpt", "mimo"].some((name) => id.toLowerCase().includes(name)),
+  )
+}
 
 // Maps npm package to the key the AI SDK expects for providerOptions
 function sdkKey(npm: string): string | undefined {
@@ -47,14 +60,41 @@ function sdkKey(npm: string): string | undefined {
   return undefined
 }
 
+// Providers that hard-reject an empty text/reasoning BLOCK inside an otherwise
+// non-empty message ("text content blocks must be non-empty"). The AI SDK's own
+// filter does not save us here: its user branch drops empty text parts, but its
+// assistant branch KEEPS an empty text part that carries providerOptions, and it
+// never inspects `reasoning` parts at all — so an empty reasoning block reaches
+// the provider untouched for every npm package.
+//
+// The original list was `@ai-sdk/anthropic` + `@ai-sdk/amazon-bedrock` only,
+// which missed the two other ways to reach the same Anthropic API:
+// `@ai-sdk/google-vertex/anthropic` and Claude via `@openrouter/ai-sdk-provider`.
+// Stripping an empty block is information-preserving for any provider, so the
+// list errs on the side of including a provider rather than excluding one.
+function stripsEmptyParts(model: Provider.Model): boolean {
+  return [
+    "@ai-sdk/anthropic",
+    "@ai-sdk/amazon-bedrock",
+    "@ai-sdk/google-vertex/anthropic",
+    "@openrouter/ai-sdk-provider",
+    "@ai-sdk/openai-compatible",
+  ].includes(model.api.npm)
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
+}
+
 function normalizeMessages(
   msgs: ModelMessage[],
   model: Provider.Model,
   _options: Record<string, unknown>,
 ): ModelMessage[] {
-  // Anthropic rejects messages with empty content - filter out empty string messages
-  // and remove empty text/reasoning parts from array content
-  if (model.api.npm === "@ai-sdk/anthropic" || model.api.npm === "@ai-sdk/amazon-bedrock" || model.api.npm === "@ai-sdk/openai-compatible") {
+  // Anthropic rejects messages with empty content. Signed thinking is the exception:
+  // its text may be empty, but its signature/redacted data must survive for replay.
+  if (stripsEmptyParts(model)) {
     msgs = msgs
       .map((msg) => {
         if (typeof msg.content === "string") {
@@ -63,8 +103,14 @@ function normalizeMessages(
         }
         if (!Array.isArray(msg.content)) return msg
         const filtered = msg.content.filter((part) => {
-          if (part.type === "text" || part.type === "reasoning") {
-            return part.text !== ""
+          if (part.type === "text") return part.text !== ""
+          if (part.type === "reasoning") {
+            if (part.text !== "") return true
+            const metadata = record(part.providerOptions?.anthropic ?? part.providerOptions?.[model.providerID])
+            return (
+              (typeof metadata?.signature === "string" && metadata.signature !== "") ||
+              (typeof metadata?.redactedData === "string" && metadata.redactedData !== "")
+            )
           }
           return true
         })
@@ -289,6 +335,92 @@ function supportsCacheMarkers(model: Provider.Model): boolean {
 // not an assistant prefill.
 const CONTINUATION_PROMPT = "Continue."
 
+// Backfill text for a message whose content is structurally present but carries
+// nothing a provider will accept. Same string as the continuation prompt: both
+// mean "there is no new instruction here, keep going".
+const EMPTY_CONTENT_PLACEHOLDER = CONTINUATION_PROMPT
+
+// Mirrors the AI SDK's OWN user-content filter. `ai@6` builds the wire payload in
+// `convertToLanguageModelMessage`, whose user branch is:
+//
+//   content: message.content.map((part) => convertPartToLanguageModelPart(part, ...))
+//     .filter((part) => part.type !== "text" || part.text !== "")
+//
+// It runs AFTER every transform here and does NOT backfill, so a user message
+// whose only text part is "" reaches the provider as `content: []` — exactly the
+// shape observed in the live Bedrock 400 payload. Note the asymmetry: the SDK's
+// assistant branch keeps an empty text part when it carries providerOptions
+// (`|| part.providerOptions != null`); the user branch has no such escape, so
+// even an empty text part holding a cache_control marker is stripped.
+//
+// Consequence: emptiness of a user message CANNOT be judged by `content.length`
+// — at this layer the offending message is a length-1 array that looks fine. It
+// must be judged by what SURVIVES this filter.
+function sdkVisibleUserParts(content: readonly any[]): readonly any[] {
+  return content.filter((part) => !part || part.type !== "text" || part.text !== "")
+}
+
+// The SDK's ASSISTANT branch uses a slightly looser predicate — an empty text
+// part survives when it carries providerOptions:
+//   .filter((part) => part.type !== "text" || part.text !== "" || part.providerOptions != null)
+// so assistant emptiness has to be judged against that rule, not the user one.
+function sdkVisibleAssistantParts(content: readonly any[]): readonly any[] {
+  return content.filter(
+    (part) => !part || part.type !== "text" || part.text !== "" || part.providerOptions != null,
+  )
+}
+
+// True when a message will reach the provider with no usable content.
+function hasNoSendableContent(msg: ModelMessage): boolean {
+  const content = msg.content as unknown
+  if (typeof content === "string") return content === ""
+  if (!Array.isArray(content)) return true
+  // Judge each role by the SDK's own post-filter view (see the notes above).
+  if (msg.role === "user") return sdkVisibleUserParts(content).length === 0
+  if (msg.role === "assistant") return sdkVisibleAssistantParts(content).length === 0
+  return content.length === 0
+}
+
+// THE global pre-send content invariant: no message may reach the provider with
+// empty content. This layer never existed before — `normalizeContentArray` only
+// guards content SHAPE, `normalizeMessages` only strips empty parts and only for
+// `@ai-sdk/anthropic`/`@ai-sdk/amazon-bedrock` (so a Bedrock-backed gateway on any
+// other npm got no protection at all), and `ensureTrailingUserMessage` inspects
+// only the trailing assistant. An empty user message fell through all three seams
+// and produced `messages.<N>: user messages must have non-empty content`.
+//
+// Policy is per-role and deliberately asymmetric:
+//   - user      → BACKFILL a minimal non-empty text turn. Dropping it would make
+//                 the request end with an assistant message, which Bedrock rejects
+//                 as a prefill — trading this 400 for the prefill 400.
+//   - assistant → DROP. It is residue with nothing to preserve, and the trailing
+//                 user guard that runs next re-establishes the prefill invariant.
+//   - tool      → LEAVE UNTOUCHED. A tool message's content must be `tool-result`
+//                 blocks keyed to a preceding `tool-call`; we cannot synthesize a
+//                 valid one, and injecting text would break tool_use/tool_result
+//                 pairing (a different 400). The SDK's empty-text filter does not
+//                 apply to the tool branch, and no empty tool message exists in
+//                 any observed transcript, so there is nothing to repair here.
+//
+// Provider-agnostic on purpose: the AI SDK applies its stripping filter for every
+// provider, so gating this on an npm package name is what created the hole.
+export function ensureNonEmptyContent(msgs: ModelMessage[]): ModelMessage[] {
+  const result: ModelMessage[] = []
+  for (const msg of msgs) {
+    if (!hasNoSendableContent(msg)) {
+      result.push(msg)
+      continue
+    }
+    if (msg.role === "assistant") continue
+    if (msg.role === "tool") {
+      result.push(msg)
+      continue
+    }
+    result.push({ ...msg, content: [{ type: "text", text: EMPTY_CONTENT_PLACEHOLDER }] } as ModelMessage)
+  }
+  return result
+}
+
 // True when an assistant ModelMessage carries no renderable content (no text and
 // no tool-call) — pure residue we can drop without losing anything.
 function isEmptyAssistant(msg: ModelMessage): boolean {
@@ -311,17 +443,46 @@ function isEmptyAssistant(msg: ModelMessage): boolean {
 // user turn is appended so the list ends with a user message. Runs at the
 // pre-send choke point in `message()`, so it also self-heals history that
 // already ends in an assistant turn.
+//
+// ORDERING CONTRACT: `ensureNonEmptyContent` MUST run before this function.
+// This guard only establishes "the list ends with user/tool"; it says nothing
+// about whether that trailing message has usable content. Running it first and
+// resolving emptiness second would let this function return a list ending in an
+// empty user message (which is what shipped, and what produced the live 400),
+// and resolving emptiness afterwards could drop that message again and re-open
+// the prefill 400. Emptiness first, prefill second — the two cannot fight.
 export function ensureTrailingUserMessage(msgs: ModelMessage[]): ModelMessage[] {
   // Drop only trailing EMPTY assistant residue (nothing to preserve).
   let end = msgs.length
   while (end > 0 && isEmptyAssistant(msgs[end - 1])) end--
   const trimmed = end === msgs.length ? msgs : msgs.slice(0, end)
   const last = trimmed[trimmed.length - 1]
-  // Already ends with user or tool (or empty) — safe to send as-is.
+  // Already ends with a user or tool message, so this is not a prefill. Their
+  // content is guaranteed non-empty by `ensureNonEmptyContent` (see the ordering
+  // contract above) — an empty trailing message is NOT safe to send as-is.
   if (!last || last.role !== "assistant") return trimmed
   // A content-bearing assistant is legitimately last: keep it and append a
   // minimal user turn so the request ends with a user message.
-  return [...trimmed, { role: "user", content: CONTINUATION_PROMPT }]
+  //
+  // The content MUST be an array of parts, never a bare string. `message()` is
+  // typed for `ModelMessage[]` (where `content: string` is legal) but it does not
+  // run on `ModelMessage[]` — it runs inside the `wrapLanguageModel` middleware on
+  // `args.params.prompt`, a `LanguageModelV3Prompt`, whose user content is
+  // `Array<TextPart | FilePart>`. That mismatch is silenced by the
+  // `@ts-expect-error` at session/llm.ts:670 (and session/prompt.ts:596).
+  //
+  // A bare string there is not merely untidy, it is THE producer of the 400:
+  // @ai-sdk/anthropic's user branch does `for (let j = 0; j < content.length; j++)`
+  // and `switch (part.type)` with cases for only `text`/`file` and NO default
+  // (dist/index.mjs:2320-2408 on 3.0.82), so a string is iterated as individual
+  // characters whose `.type` is `undefined`, nothing is pushed, and the message
+  // goes out as `{"role":"user","content":[]}` — the exact trailing message in the
+  // observed failing request.
+  //
+  // `ensureNonEmptyContent` cannot save this: per the ordering contract it runs
+  // BEFORE this function, and "Continue." is not empty by any predicate, so the
+  // append is never re-inspected.
+  return [...trimmed, { role: "user", content: [{ type: "text", text: CONTINUATION_PROMPT }] } as ModelMessage]
 }
 
 // Hard prune of the trailing assistant run, discarding its content. Unlike
@@ -473,17 +634,66 @@ function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage
   return msgs
 }
 
-// Minimal crash guard: ensure msg.content is never a non-string non-array value
-// (object, undefined, null) that would blow up downstream `.map()` calls.
+// Minimal crash guard: for the roles it can repair, ensure msg.content is never a
+// non-string non-array value (object, undefined, null) that would blow up
+// downstream `.map()` calls. NOT a blanket guarantee — `tool` is deliberately
+// exempt (see below), so downstream code must still not assume array content.
 // Strings are valid ModelMessage content (the AI SDK accepts content: string |
-// Array) and are left untouched. Only genuinely-invalid types are normalized
-// to a safe empty array so every downstream path can safely call `.map()`.
+// Array) and are left untouched. Only genuinely-invalid types are normalized.
+//
+// Invalid content is BACKFILLED, not blanked, for roles the provider requires to
+// be non-empty. Emitting `content: []` here would trade a crash for a 400
+// ("user messages must have non-empty content"), and blanking a user turn also
+// re-opens the trailing-assistant prefill 400 once the empty message is dropped
+// downstream. An assistant gets `[]` because it carries no obligation: the
+// non-empty invariant drops empty assistant residue and the trailing-user guard
+// then re-establishes the prefill invariant.
+//
+// A `tool` message is left EXACTLY as-is, matching ensureNonEmptyContent's
+// per-role policy: injecting a text part into a tool message breaks tool_use /
+// tool_result pairing, which trades one 400 for another, and emitting `content:
+// []` is itself illegal for a tool result. Only `user` gets the backfill.
+// "Exactly as-is" is the load-bearing part: `[]` is NOT an acceptable substitute,
+// and leaving the value untouched is what makes this guard and
+// `ensureNonEmptyContent` reach the same outcome on the same input
+// (`hasNoSendableContent` returns true for non-array content, and the tool branch
+// there re-pushes the message unchanged).
 function normalizeContentArray(msgs: ModelMessage[]): ModelMessage[] {
   return msgs.map((msg) => {
     if (typeof msg.content === "string" || Array.isArray(msg.content)) return msg
-    // object / undefined / null — not a valid ModelMessage content shape;
-    // wrap in an empty array so .map() downstream never throws.
-    return { ...msg, content: [] } as ModelMessage
+    if (msg.role === "assistant") return { ...msg, content: [] } as ModelMessage
+    if (msg.role === "user") return { ...msg, content: [{ type: "text", text: EMPTY_CONTENT_PLACEHOLDER }] } as ModelMessage
+    return msg
+  })
+}
+
+// Anthropic's SDK discards historical reasoning without a signature or redacted
+// data. The opt-in compatibility mode supplies an empty placeholder signature,
+// making unsigned reasoning follow the same native thinking-block serializer
+// branch as signed reasoning. Compatible endpoints may intentionally accept it;
+// the official Anthropic API can still reject an unverifiable signature.
+function forceAnthropicReasoningContent(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
+  if (!Flag.MIMOCODE_FORCE_ANTHROPIC_REASONING_CONTENT) return msgs
+  if (!["@ai-sdk/anthropic", "@ai-sdk/google-vertex/anthropic"].includes(model.api.npm)) return msgs
+
+  return msgs.map((msg) => {
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) return msg
+    return {
+      ...msg,
+      content: msg.content.map((part) => {
+        if (part.type !== "reasoning") return part
+        const metadata = record(part.providerOptions?.anthropic ?? part.providerOptions?.[model.providerID])
+        if (typeof metadata?.signature === "string" || typeof metadata?.redactedData === "string") return part
+        const key = part.providerOptions?.anthropic ? "anthropic" : model.providerID
+        return {
+          ...part,
+          providerOptions: {
+            ...part.providerOptions,
+            [key]: { ...metadata, signature: "" },
+          },
+        }
+      }),
+    }
   })
 }
 
@@ -621,23 +831,8 @@ function imagePayload(value: unknown, mediaType?: string): ImagePayload | undefi
   return { kind: "bytes", mime: mediaType, bytes, size: bytes.byteLength }
 }
 
-// Bring one oversized image under maxSize: recompress if we can decode it,
-// otherwise return undefined so the caller strips it to a text placeholder.
-// Never returns something still over the limit.
-function shrinkBase64(
-  mime: string,
-  base64: string,
-  maxSize: number,
-): { mime: string; base64: string } | undefined {
-  const compressed = compressImage(mime, Buffer.from(base64, "base64"), maxSize)
-  if (compressed && base64ByteSize(compressed.data) <= maxSize) {
-    return { mime: compressed.mediaType, base64: compressed.data }
-  }
-  return undefined
-}
-
-const OVERSIZE_PLACEHOLDER = (size: number, maxSize: number) =>
-  `[Image omitted: ${size} bytes exceeds the ${maxSize}-byte limit and could not be compressed.]`
+const OVERSIZE_PLACEHOLDER = (size: number) =>
+  `[Image omitted: ${size}-byte image exceeds provider limits or could not be safely processed.]`
 
 // Per-provider inline-image byte cap. Only Anthropic and Bedrock reject a single
 // image whose decoded base64 exceeds ~5 MB with a non-retryable 400 — that is the
@@ -668,29 +863,34 @@ function providerImageCap(model: Provider.Model): number {
     npm === "@openrouter/ai-sdk-provider" ||
     npm === "@ai-sdk/github-copilot"
   ) {
+    const apiID = model.api.id.toLowerCase()
+    const modelID = model.id.toLowerCase()
     const routesToAnthropic =
-      model.api.id.includes("claude") ||
-      model.api.id.includes("anthropic") ||
-      model.id.includes("claude") ||
-      model.id.includes("anthropic")
+      apiID.includes("claude") ||
+      apiID.includes("anthropic") ||
+      modelID.includes("claude") ||
+      modelID.includes("anthropic")
     if (routesToAnthropic) return DEFAULT_MAX_IMAGE_BYTES
   }
   // Non-Anthropic providers (e.g., xiaomi/mimo-v2.5 via openai-compatible, openai, google, grok)
   return 20 * 1024 * 1024 // 20MB — standard vision API limit
 }
 
+function providerImageDimensionCap(model: Provider.Model): number {
+  return providerImageCap(model) === Infinity ? Infinity : DEFAULT_MAX_IMAGE_DIMENSION
+}
+
 // Two responsibilities:
 // 1. Count cap (maxImages): drop the oldest excess *user* prompt images,
 //    including image-typed `file` parts produced by synthetic tool attachments.
-// 2. Size cap (maxSize): for EVERY image the provider would measure — user
+// 2. Byte/dimension caps: for EVERY image the provider would measure — user
 //    `image`/image-`file` parts AND tool-result `media`/`image-data`/`file-data`
-//    parts on tool/assistant messages — recompress oversized ones under the
-//    limit, or strip them to a text placeholder.
+//    parts on tool/assistant messages — recompress oversized ones under both
+//    limits, or strip them to a text placeholder.
 //
-// The size cap is PROVIDER-AWARE (providerImageCap): only Anthropic/Bedrock have
-// the ~5 MB hard limit, so only they get DEFAULT_MAX_IMAGE_BYTES; other providers
-// get Infinity (untouched). An explicit Flag.MIMOCODE_MAX_PROMPT_IMAGE_SIZE always
-// wins when set.
+// The caps are provider-aware: Anthropic/Claude routes get the ~5 MB byte limit
+// and 2000 px longest-edge limit; other providers remain untouched unless the
+// explicit Flag.MIMOCODE_MAX_PROMPT_IMAGE_SIZE byte override is set.
 //
 // For the capped providers the size cap runs by default (no flag needed) because a
 // single >5 MB image in history otherwise 400s on every subsequent request and
@@ -700,11 +900,12 @@ function providerImageCap(model: Provider.Model): number {
 function limitImages(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
   const maxImages = Flag.MIMOCODE_MAX_PROMPT_IMAGES
   const maxSize = Flag.MIMOCODE_MAX_PROMPT_IMAGE_SIZE ?? providerImageCap(model)
+  const maxDimension = providerImageDimensionCap(model)
 
   // Zero-allocation fast path: with no image-count cap and no size cap there is
   // nothing to drop or shrink, so return the messages untouched instead of
   // rebuilding every tool-result content object on each send.
-  if (maxImages === undefined && maxSize === Infinity) return msgs
+  if (maxImages === undefined && maxSize === Infinity && maxDimension === Infinity) return msgs
 
   const total = msgs.reduce(
     (sum, msg) =>
@@ -734,16 +935,21 @@ function limitImages(msgs: ModelMessage[], model: Provider.Model): ModelMessage[
     )
   }
 
-  // Enforce the byte-size cap on one tool-result content entry. Rewrites the
-  // media bytes in place when we can recompress, otherwise swaps it for a text
-  // entry so the oversized payload never reaches the provider.
+  // Enforce byte and dimension caps on one tool-result content entry.
   const capToolMedia = (entry: unknown) => {
     if (!isImageMediaEntry(entry)) return entry
     const size = base64ByteSize(entry.data)
-    if (size <= maxSize) return entry
-    const shrunk = shrinkBase64(entry.mediaType, entry.data, maxSize)
-    if (shrunk) return { ...entry, data: shrunk.base64, mediaType: shrunk.mime }
-    return { type: "text" as const, text: OVERSIZE_PLACEHOLDER(size, maxSize) }
+    const bytes = Buffer.from(entry.data, "base64")
+    const dimensions = imageDimensions(entry.mediaType, bytes)
+    if (
+      size <= maxSize &&
+      (!supportsImageDimensions(entry.mediaType) ||
+        (dimensions && Math.max(dimensions.width, dimensions.height) <= maxDimension))
+    )
+      return entry
+    const shrunk = compressImage(entry.mediaType, bytes, maxSize, maxDimension)
+    if (shrunk) return { ...entry, data: shrunk.data, mediaType: shrunk.mediaType }
+    return { type: "text" as const, text: OVERSIZE_PLACEHOLDER(size) }
   }
 
   return msgs.map((msg) => {
@@ -778,26 +984,33 @@ function limitImages(msgs: ModelMessage[], model: Provider.Model): ModelMessage[
         part.type === "image" ? part.image : part.data,
         part.mediaType,
       )
-      if (!payload || payload.size <= maxSize) return part
+      if (!payload) return part
       if (payload.mime?.startsWith("image/")) {
-        const base64 =
+        const bytes =
           payload.kind === "bytes"
-            ? Buffer.from(payload.bytes.buffer, payload.bytes.byteOffset, payload.bytes.byteLength).toString("base64")
-            : payload.base64
-        const shrunk = shrinkBase64(payload.mime, base64, maxSize)
+            ? Buffer.from(payload.bytes.buffer, payload.bytes.byteOffset, payload.bytes.byteLength)
+            : Buffer.from(payload.base64, "base64")
+        const dimensions = imageDimensions(payload.mime, bytes)
+        if (
+          payload.size <= maxSize &&
+          (!supportsImageDimensions(payload.mime) ||
+            (dimensions && Math.max(dimensions.width, dimensions.height) <= maxDimension))
+        )
+          return part
+        const shrunk = compressImage(payload.mime, bytes, maxSize, maxDimension)
         if (shrunk) {
           const data =
             payload.kind === "data-url"
-              ? `data:${shrunk.mime};base64,${shrunk.base64}`
+              ? `data:${shrunk.mediaType};base64,${shrunk.data}`
               : payload.kind === "bytes"
-                ? new Uint8Array(Buffer.from(shrunk.base64, "base64"))
-                : shrunk.base64
+                ? new Uint8Array(Buffer.from(shrunk.data, "base64"))
+                : shrunk.data
           return part.type === "image"
-            ? { ...part, image: data, mediaType: shrunk.mime }
-            : { ...part, data, mediaType: shrunk.mime }
+            ? { ...part, image: data, mediaType: shrunk.mediaType }
+            : { ...part, data, mediaType: shrunk.mediaType }
         }
       }
-      return { type: "text" as const, text: OVERSIZE_PLACEHOLDER(payload.size, maxSize) }
+      return { type: "text" as const, text: OVERSIZE_PLACEHOLDER(payload.size) }
     })
     return { ...msg, content }
   })
@@ -828,6 +1041,12 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
   msgs = unsupportedParts(msgs, model)
   msgs = limitImages(msgs, model)
   msgs = normalizeMessages(msgs, model, options)
+  msgs = forceAnthropicReasoningContent(msgs, model)
+  // Ordering is load-bearing (see ensureTrailingUserMessage's ordering contract):
+  // resolve EMPTY content first, then the trailing-assistant/prefill invariant.
+  // Emptiness is provider-agnostic because the AI SDK strips empty user text
+  // parts for every provider, downstream of everything here.
+  msgs = ensureNonEmptyContent(msgs)
   // SAFE prefill guard: never let the request end with an assistant (prefill)
   // message a provider (e.g. Bedrock) would reject, without deleting a completed
   // reply. Drops only empty residue; appends a continuation user turn otherwise.
@@ -866,14 +1085,89 @@ export function message(msgs: ModelMessage[], model: Provider.Model, options: Re
   return msgs
 }
 
-// Place a cache breakpoint on the tool definitions. The cache hierarchy is
-// `tools` → `system` → `messages`, so marking the LAST tool caches the entire
-// tool-schema block (often several KB) as a stable prefix that sits in front of
-// the system + message caches. Tools are passed to the SDK separately from
-// `message()` and never go through its providerID→SDK-key remap, so we resolve
-// the SDK-keyed marker via `cacheMarkerFor`. Tool registration order is stable
-// (insertion order of the tools record), so "last tool" is deterministic.
+// OpenAI's Responses API treats a function tool that OMITS `strict` as strict,
+// and `@ai-sdk/openai` only emits the field when the tool sets it
+// (`...tool.strict != null ? { strict: tool.strict } : {}`) — so by default we
+// were opting into constrained decoding by accident.
+//
+// Our tool schemas are deliberately NOT strict-compatible: optional parameters
+// stay out of `required`, not every object carries `additionalProperties: false`,
+// and discriminated unions keep an `anyOf`. Rather than reject the request, the
+// Codex backend auto-patches such a schema (observed on the wire: all 17 tools
+// came back tagged `strict: true`, `bash.required` grew from 2 entries to 5, and
+// `task.parameters.properties.operation` gained `additionalProperties: false`)
+// and then fails to compile the resulting decoding grammar. Because the failure
+// happens at GENERATION time, the 200 is already committed and the error can
+// only arrive mid-stream as `event: error` (`server_error`) + `response.failed` —
+// i.e. "the answer stops half-written". Sending `strict: true` explicitly with
+// the same schema gets a clean 502 instead, which is why this read as random
+// upstream flakiness rather than a deterministic schema problem.
+//
+// So state the intent explicitly.
+//
+// This list is keyed by npm package, but the Responses-vs-Chat decision is made
+// per PROVIDER in `provider.ts` `getModel`. Those two can drift, so here is the
+// full set of `sdk.responses()` call sites and why each is or is not listed:
+//
+//   provider.ts:323  openai                    @ai-sdk/openai  → LISTED
+//   provider.ts:359  azure                     @ai-sdk/azure   → LISTED, builds
+//                    `OpenAIResponsesLanguageModel` from `@ai-sdk/openai/internal`
+//   provider.ts:379  azure-cognitive-services  @ai-sdk/azure   → covered by the above
+//                    (catalog pins the provider's npm to `@ai-sdk/azure`)
+//   provider.ts:340  github-copilot            → the npm id resolves to the VENDORED
+//                    `./sdk/copilot`, whose prepare-tools already always emits
+//                    `strict`, so it is immune and must stay out of this list
+//   provider.ts:331  xai                       @ai-sdk/xai     → NOT listed. It
+//                    forwards `tool.strict` with the same omit-when-null guard, but
+//                    its prepare-tools runs every tool schema through
+//                    `removeAdditionalPropertiesFalse` (xai/dist:319). Strict mode
+//                    REQUIRES `additionalProperties: false`, so a strict-by-default
+//                    xAI would reject every tool call the SDK makes. It therefore
+//                    cannot be strict by default, and forcing the field here would
+//                    assert a constraint xAI has not been shown to honour.
+//
+// Everything else is left alone on purpose: `@ai-sdk/anthropic` warns ("strict mode
+// is not supported by this provider") for any non-null `strict`, so a blanket
+// default would spam warnings on every Anthropic request.
+//
+// An explicit per-tool `strict` is preserved, so a tool that has been made
+// strict-compatible can still opt in.
+//
+// Azure's `useCompletionUrls` branch sends the same tools to Chat Completions
+// instead, where the field lands as `function.strict: false` — a documented
+// boolean whose default is already false, so that path is unaffected.
+const EXPLICIT_NON_STRICT_TOOL_SDKS = ["@ai-sdk/openai", "@ai-sdk/azure"]
+
+// The single choke point for the outbound tool set (session/llm.ts passes the
+// result straight to `streamText`). Two responsibilities:
+//
+// 1. Pin `strict: false` for EXPLICIT_NON_STRICT_TOOL_SDKS — see above for why
+//    omitting the field breaks the Codex backend mid-stream.
+// 2. Place a cache breakpoint on the tool definitions. The cache hierarchy is
+//    `tools` → `system` → `messages`, so marking the LAST tool caches the entire
+//    tool-schema block (often several KB) as a stable prefix that sits in front
+//    of the system + message caches. Tools are passed to the SDK separately from
+//    `message()` and never go through its providerID→SDK-key remap, so we
+//    resolve the SDK-keyed marker via `cacheMarkerFor`. Tool registration order
+//    is stable (insertion order of the tools record), so "last tool" is
+//    deterministic.
+//
+// Both mutate in place. That is safe because the record and every tool object in
+// it are rebuilt per request: `resolveTools` allocates a fresh record and calls
+// `tool()` per entry, and MCP entries come from `convertMcpTool`, which returns
+// a new `dynamicTool()` on every `MCP.tools()` call. Nothing here outlives the
+// request, so a model switch between steps cannot carry `strict` over to a
+// provider that would reject or warn on it.
 export function tools<T extends Record<string, any>>(tools: T, model: Provider.Model): T {
+  if (EXPLICIT_NON_STRICT_TOOL_SDKS.includes(model.api.npm)) {
+    // Guarded because this walks every entry; the single `last` lookup below can
+    // assume a well-formed record, but a loop over N values is cheaper to make
+    // safe than to debug as a crash in the request path.
+    for (const tool of Object.values(tools)) {
+      if (tool && tool.strict == null) tool.strict = false
+    }
+  }
+
   if (!supportsCacheMarkers(model)) return tools
   const marker = cacheMarkerFor(model)
   if (!marker) return tools
@@ -883,6 +1177,48 @@ export function tools<T extends Record<string, any>>(tools: T, model: Provider.M
   const last = tools[names[names.length - 1]]
   last.providerOptions = mergeDeep(last.providerOptions ?? {}, marker)
   return tools
+}
+
+// The `response_format` / `text.format` sibling of the tool `strict` problem
+// above. `generateObject`/`streamObject` ship our zod schema as a `json_schema`
+// response format, and there the OpenAI SDKs default `strictJsonSchema` to TRUE
+// — `@ai-sdk/openai` on both the chat and responses paths, and
+// `@ai-sdk/openai-compatible` — so `strict: true` goes out EXPLICITLY rather
+// than being omitted.
+//
+// Our judge schema is not strict-compatible: `SessionGoal.Verdict` marks
+// `impossible` optional, so `required` ships 2 of its 3 properties and OpenAI
+// rejects the request (strict mode requires every key in `properties` to appear
+// in `required`). Verified on the wire: `text.format` goes out as `strict: true`
+// with `required: ["ok", "reason"]`. Because `goal.ts` judges with the SESSION's
+// model, this breaks the stop-condition judge on every OpenAI-backed model.
+//
+// Unlike the tool case this fails cleanly at validation instead of mid-stream, so
+// it is a separate, visible bug — but the root cause is the same: a strict
+// default meeting a deliberately non-strict schema.
+//
+// Making the schema strict-compatible is the wrong trade here. `impossible` is
+// optional BY DESIGN — JUDGE_SYSTEM tells the judge to return `{"ok": false}`
+// WITHOUT `impossible` when in doubt — so forcing it into `required` would change
+// what the judge is asked to produce. State `strict: false` instead, exactly as
+// for tools.
+//
+// Scoped to the SDKs that read `strictJsonSchema` AND default it to true.
+// `@ai-sdk/openai-compatible` is included: it looks up provider options under the
+// name it was constructed with, which provider.ts sets to `model.providerID` —
+// the same key `providerOptions()` falls back to when `sdkKey()` has no mapping.
+//
+// Schemas that ARE strict-compatible (e.g. the agent-config schema in
+// agent/agent.ts) are deliberately left alone so they keep constrained decoding.
+const DEFAULT_STRICT_SCHEMA_SDKS = ["@ai-sdk/openai", "@ai-sdk/azure", "@ai-sdk/openai-compatible"]
+
+// Feed through `providerOptions()` before handing to generateObject/streamObject.
+// Returns undefined — not `{}` — for SDKs that do not default strict on, so
+// callers can skip attaching a provider-options bag entirely rather than sending
+// an empty one to every other provider.
+export function structuredOutputOptions(model: Provider.Model) {
+  if (!DEFAULT_STRICT_SCHEMA_SDKS.includes(model.api.npm)) return undefined
+  return { strictJsonSchema: false }
 }
 
 export function temperature(model: Provider.Model) {
@@ -942,7 +1278,6 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
   const id = model.id.toLowerCase()
   const adaptiveEfforts = anthropicAdaptiveEfforts(model.api.id)
   if (
-    id.includes("deepseek") ||
     id.includes("minimax") ||
     id.includes("glm") ||
     id.includes("mistral") ||
@@ -952,6 +1287,14 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
     id.includes("big-pickle")
   )
     return {}
+
+  if (id.includes("deepseek")) {
+    if (model.providerID !== "deepseek" || model.api.npm !== "@ai-sdk/openai-compatible") return {}
+    return {
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    }
+  }
 
   // see: https://docs.x.ai/docs/guides/reasoning#control-how-hard-the-model-thinks
   if (id.includes("grok") && id.includes("grok-3-mini")) {
@@ -1559,9 +1902,7 @@ export function providerOptions(model: Provider.Model, options: { [x: string]: a
 }
 
 export function maxOutputTokens(model: Provider.Model): number {
-  if (model.providerID === "mimo" || model.providerID === "xiaomi" || model.id.toLowerCase().includes("mimo")) {
-    return MIMO_OUTPUT_TOKEN_MAX
-  }
+  if (usesLargeModelDefaults(model)) return LARGE_MODEL_OUTPUT_TOKEN_MAX
   return Math.min(model.limit.output, OUTPUT_TOKEN_MAX) || OUTPUT_TOKEN_MAX
 }
 

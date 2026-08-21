@@ -97,4 +97,24 @@ describe("skill.search", () => {
   test("excludes compose skills from the searchable manifest", () => {
     expect(searchSkills("compose:tdd", [skill("compose:tdd", "Use test-driven development.")])).toEqual([])
   })
+
+  test("does not special-case compose-next: its name is not a compose: namespace", () => {
+    // Compose Next is a normal model-invocable skill. Legacy compose:* skills
+    // remain excluded by the namespace filter.
+    const results = searchSkills("compose-next", [
+      skill("compose-next", "End-to-end feature orchestration for frontier models."),
+    ])
+    expect(results.map((r) => r.skill_id)).toEqual(["compose-next"])
+  })
+
+  test("caller-side filtering: a skill absent from the input list cannot appear in results", () => {
+    // A skill absent from the model-invocable input cannot be returned. This
+    // remains the contract for skills that opt out of model invocation.
+    const modelInvocableForDefaultAgent = [
+      skill("deep-research", "Multi-source research report."),
+      skill("data-analytics", "Analyze datasets and produce findings."),
+    ]
+    const results = searchSkills("compose-next end to end feature orchestration", modelInvocableForDefaultAgent)
+    expect(results.every((r) => r.skill_id !== "compose-next")).toBe(true)
+  })
 })

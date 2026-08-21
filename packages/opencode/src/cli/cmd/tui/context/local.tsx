@@ -14,14 +14,9 @@ import { RGBA } from "@opentui/core"
 import { Filesystem } from "@/util"
 import * as Model from "../util/model"
 import { useLanguage } from "@tui/context/language"
+import { createFreeApiSunsetSignal, freeApiModelNameKey, isFreeApiModel } from "@tui/util/free-api-sunset"
 
-export function parseModel(model: string) {
-  const [providerID, ...rest] = model.split("/")
-  return {
-    providerID: providerID,
-    modelID: rest.join("/"),
-  }
-}
+export { parse as parseModel } from "../util/model"
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
@@ -30,6 +25,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sdk = useSDK()
     const toast = useToast()
     const t = useLanguage().t
+    const freeApiSunset = createFreeApiSunsetSignal()
 
     function isModelValid(model: { providerID: string; modelID: string }) {
       const provider = sync.data.provider.find((x) => x.id === model.providerID)
@@ -51,7 +47,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         current: undefined as string | undefined,
         sessionHasMessages: false,
       })
-      const FREE_SWITCH_GROUP = ["build", "plan", "compose", "security", "prewalk-frontier"]
+      const FREE_SWITCH_GROUP = ["build", "plan", "compose", "security"]
       const canSwitchTo = (target: string) => {
         if (!agentStore.sessionHasMessages) return true
         const current = agentStore.current
@@ -108,6 +104,10 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             switchBlockedToast()
             return
           }
+          this.set(name)
+        },
+        // bypasses the mid-session canSwitchTo lock; set() still validates the name
+        forceSwitch(name: string) {
           this.set(name)
         },
         move(direction: 1 | -1) {
@@ -205,33 +205,15 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
       const args = useArgs()
       const fallbackModel = createMemo(() => {
-        if (args.model) {
-          const { providerID, modelID } = parseModel(args.model)
-          if (isModelValid({ providerID, modelID })) {
-            return {
-              providerID,
-              modelID,
-            }
-          }
-        }
+        const initial = Model.initial(sync.data.provider, {
+          argument: args.model,
+          ready: modelStore.ready,
+          recent: modelStore.recent,
+          configured: sync.data.config.model,
+        })
+        if (initial || !modelStore.ready) return initial
 
-        if (sync.data.config.model) {
-          const { providerID, modelID } = parseModel(sync.data.config.model)
-          if (isModelValid({ providerID, modelID })) {
-            return {
-              providerID,
-              modelID,
-            }
-          }
-        }
-
-        for (const item of modelStore.recent) {
-          if (isModelValid(item)) {
-            return item
-          }
-        }
-
-        // No args/config/recent match: prefer the free mimo-auto channel so a
+        // No args/recent/config match: prefer the free mimo-auto channel so a
         // clean install defaults to a usable free model rather than whatever
         // provider happens to sit first (e.g. paid xiaomi/ultraspeed).
         const mimo = sync.data.provider.find((p) => p.id === "mimo")
@@ -287,8 +269,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return {
             provider: provider?.name || value.providerID,
             model:
-              value.modelID === "mimo-auto"
-                ? t("tui.model.mimo_auto.name")
+              isFreeApiModel(value)
+                ? t(freeApiModelNameKey(freeApiSunset()))
                 : Model.name(sync.data.provider, value.providerID, value.modelID),
             reasoning: info?.capabilities?.reasoning ?? false,
           }
@@ -508,6 +490,32 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       }
     })
 
+    // permission ask timeout: null = no timeout (wait indefinitely), positive
+    // number = ms before auto-reject. Orthogonal to skipPermissions.
+    // Initialized from server so the TUI reflects the actual value (e.g. one
+    // set via MIMOCODE_SKIP_ALL_FORCED_ASK_TIMEOUT_MS env var).
+    const permissionAskTimeout = iife(() => {
+      const [ms, setMs] = createSignal<number | null>(null)
+      void sdk.client.permission.askTimeout().then((res) => {
+        if (res.data !== undefined) setMs(res.data)
+      })
+      return {
+        current: ms,
+        set(value: number | null) {
+          const previous = ms()
+          setMs(value)
+          void sdk.client.permission.setAskTimeout({ ms: value }).catch(() => {
+            setMs(previous)
+            toast.show({
+              variant: "error",
+              message: "Failed to update permission ask timeout",
+              duration: 4000,
+            })
+          })
+        },
+      }
+    })
+
     // Automatically update model when agent changes
     createEffect(() => {
       const value = agent.current()
@@ -547,6 +555,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       mcp,
       neverAsk,
       skipPermissions,
+      permissionAskTimeout,
       orchestrator,
     }
     return result

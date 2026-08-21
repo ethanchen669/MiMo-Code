@@ -5,7 +5,7 @@
 Config is JSON or JSONC. MiMoCode discovers it by walking up from the cwd to the worktree root, then falls back to global.
 
 - Project: `.mimocode/mimocode.json` or `.mimocode/mimocode.jsonc`
-- Global: `~/.config/mimocode/mimocode.json` (XDG config dir)
+- Global: `~/.config/mimocode/mimocode.jsonc` or `mimocode.json` (XDG config dir). New installs seed `mimocode.jsonc`.
 - Extra config dirs are also searched via `$MIMOCODE_CONFIG_DIR`.
 
 Project config merges **over** global. Always include `"$schema": "https://mimo.xiaomi.com/mimocode/config.json"` for validation.
@@ -17,9 +17,9 @@ Base directories resolve from `MIMOCODE_HOME` if set (must be absolute → `<hom
 | Kind | Default location | Holds |
 |------|------------------|-------|
 | data | `~/.local/share/mimocode/` | memory, logs, `builtin_skills/<version>/`, bin |
-| config | `~/.config/mimocode/` | global `mimocode.json` |
+| config | `~/.config/mimocode/` | global `mimocode.jsonc` / `mimocode.json` |
 | cache | `~/.cache/mimocode/` | caches, downloaded bins |
-| state | `~/.local/state/mimocode/` | runtime state |
+| state | `~/.local/state/mimocode/` | runtime state, including TUI recent/favorite models in `model.json` |
 
 Memory files live under `~/.local/share/mimocode/memory/`:
 - `projects/global/MEMORY.md` — project memory
@@ -51,46 +51,7 @@ All optional.
 | `provider` | Custom provider configs & model overrides |
 | `enabled_providers` / `disabled_providers` | Allowlist / blocklist providers |
 
-### Custom OpenAI-compatible endpoint
-
-MiMoCode can configure a provider that is absent from the built-in model catalog. Given a base URL, API key, and model name, use this shape:
-
-```jsonc
-{
-  "$schema": "https://mimo.xiaomi.com/mimocode/config.json",
-  "model": "custom/MODEL_NAME",
-  "provider": {
-    "custom": {
-      "name": "Custom",
-      "npm": "@ai-sdk/openai-compatible",
-      "only_configured_models": true,
-      "models": {
-        "MODEL_NAME": {
-          "name": "MODEL_NAME"
-        }
-      },
-      "options": {
-        "baseURL": "BASE_URL",
-        "apiKey": "API_KEY"
-      }
-    }
-  }
-}
-```
-
-Field semantics:
-
-- `provider.custom` — `custom` is the provider ID. It may be replaced with a user-specified or unused lowercase ID, but the prefix in the top-level `model` must match it.
-- `npm` — selects the wire-protocol adapter. `@ai-sdk/openai-compatible` supports OpenAI-compatible APIs; a non-compatible service needs its own adapter.
-- `models.MODEL_NAME` — the map key is the exact upstream model ID, not merely a display name. Model IDs containing `/` are supported.
-- `options.baseURL` — the exact request base URL. The runtime gives this precedence over a catalog URL and does not require a known provider.
-- `options.apiKey` — the credential passed to the provider SDK. This is a plaintext secret in the config, so never echo it and keep the file user-readable only. As an alternative, known providers can obtain credentials from their documented environment variable or the provider login flow.
-- `only_configured_models: true` — limits the provider to the explicitly configured model instead of augmenting a known catalog.
-- `model` — selects the configured model using `<provider-id>/<model-id>`; only the first `/` separates the provider, so the model ID itself may contain `/`.
-
-Use `~/.config/mimocode/mimocode.json` for user-wide settings and `.mimocode/mimocode.json` for project-only settings. Merge into the existing JSON/JSONC rather than replacing unrelated keys. Preserve the supplied base URL and model ID exactly; do not infer or append `/v1`.
-
-After editing, verify with `mimo models` or the TUI model picker. Configuration is read on the next turn; select the configured model again or start a new session if the current session has already pinned another model.
+For custom endpoints, adapter selection, provider reuse, credential handling, and verification, read @providers.md before editing.
 
 ### Model groups
 
@@ -137,7 +98,7 @@ Prefer a markdown file (`.mimocode/agent/<name>.md`, body = system prompt) for d
 | Key | Purpose |
 |-----|---------|
 | `skills` | `paths[]` extra skill folders + `urls[]` remote skill indexes |
-| `mcp` | MCP servers: `local` (command/env) or `remote` (url/headers/oauth); `{ "enabled": false }` disables one |
+| `mcp` | MCP servers: `local` (command/env) or `remote` (url/headers/oauth); `{ "enabled": false }` disables one; `sampling` sets the client-sampling policy (`deny`/`ask`/`allow`, default `ask`) |
 | `tools` | Record of tool-id → boolean enable/disable |
 | `tool.invocation_style` | `json` (default) or `shell`; `tool.invocation_style_by_tool` for per-tool override |
 | `command` | Custom slash commands |
@@ -150,6 +111,8 @@ Prefer a markdown file (`.mimocode/agent/<name>.md`, body = system prompt) for d
 
 As context fills, MiMoCode auto-checkpoints (a background writer distills the conversation into `checkpoint.md`) and, near the limit, **rebuilds**: it inserts a boundary at the last successful checkpoint so earlier messages collapse to the checkpoint summary while recent messages are kept verbatim. If a checkpoint writer is still running when a rebuild is needed, the rebuild waits for it (with a visible "Preparing conversation context…" status) — briefly when a usable checkpoint already exists, longer for the very first one — then proceeds; if no checkpoint can be produced it falls back to lossy compaction. You can trigger a rebuild yourself any time with the `/rebuild` slash command.
 
+The trigger is the model's prompt capacity (`limit.input` when the provider publishes one, else `limit.context`) minus the reserves, optionally lowered by `compaction.max_context`. `mimo models <provider>` prints the resolved window and the trigger per model, and `/status` shows both plus the current usage. Two things users hit here: a model's usable window depends on the route (ChatGPT/Codex subscription vs direct API key vs a reseller like OpenRouter can all differ for the same model name, and a 1M catalog figure does not mean the route serves 1M), and providers may price very long prompts higher (OpenAI charges 2x input / 1.5x output for GPT-5.6 requests above 272K input) — `compaction.max_context` is the knob for both.
+
 | Key | Purpose |
 |-----|---------|
 | `compaction.auto` | Auto-compact when context full (default true) |
@@ -157,9 +120,9 @@ As context fills, MiMoCode auto-checkpoints (a background writer distills the co
 | `compaction.tail_turns` | Recent user turns kept verbatim (default 2) |
 | `compaction.preserve_recent_tokens` | Max recent tokens kept verbatim |
 | `compaction.reserved` | Token buffer to avoid overflow |
+| `compaction.max_context` | Compact earlier than the model window. One value for all models, or a map keyed `"<providerID>/<modelID>"` (wildcards allowed, longest pattern wins). Values: token count, `"300K"`, `"1M"`, or `"50%"` of the window. Always clamped to the provider cap — can only lower the trigger, never raise it. `0` = no budget. Set it from the TUI with `/context-limit` |
 | `checkpoint.thresholds` | Context-fill triggers, e.g. `["40%","60%","80%"]` |
 | `checkpoint.reserved` | Token buffer for checkpoint ops (default 20000) |
-| `checkpoint.max_writer_failures` | Consecutive writer failures before pausing (default 3) |
 | `checkpoint.fork` | Fork parent prefix into writer session for cache reuse (default false) |
 | `checkpoint.push_caps.*` | Per-section token caps for rebuild context (tasks_ledger, focus_task, checkpoint, memory, notes, global, recent_user, …) |
 | `checkpoint.task_archive_days` | Days before done/abandoned tasks filtered out (default 7) |

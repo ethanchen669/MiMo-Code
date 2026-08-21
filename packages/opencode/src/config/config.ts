@@ -42,6 +42,7 @@ import { ConfigPermission } from "./permission"
 import { ConfigPlugin } from "./plugin"
 import { ConfigProvider } from "./provider"
 import { ConfigServer } from "./server"
+import { ConfigLLMServer } from "./llm-server"
 import { ConfigSkills } from "./skills"
 import { ConfigVariable } from "./variable"
 import { Npm } from "@/npm"
@@ -93,6 +94,8 @@ const LogLevelRef = Schema.Any.annotate({ [ZodOverride]: Log.Level })
 
 const PositiveInt = Schema.Number.check(Schema.isInt()).check(Schema.isGreaterThan(0))
 const NonNegativeInt = Schema.Number.check(Schema.isInt()).check(Schema.isGreaterThanOrEqualTo(0))
+// Token count as a number or a shorthand string ("300K", "1.5M", "50%").
+const TokenQuantity = Schema.Union([NonNegativeInt, Schema.String])
 
 const InfoSchema = Schema.Struct({
   $schema: Schema.optional(Schema.String).annotate({
@@ -101,6 +104,9 @@ const InfoSchema = Schema.Struct({
   logLevel: Schema.optional(LogLevelRef).annotate({ description: "Log level" }),
   server: Schema.optional(ConfigServer.Server).annotate({
     description: "Server configuration for mimo serve and web commands",
+  }),
+  llmServer: Schema.optional(ConfigLLMServer.LLMServer).annotate({
+    description: "Token lifetime defaults for the temporary local LLM server (mimo llm-server)",
   }),
   command: Schema.optional(Schema.Record(Schema.String, ConfigCommand.Info)).annotate({
     description: "Command configuration, see https://mimo.xiaomi.com/mimocode/commands",
@@ -252,8 +258,17 @@ const InfoSchema = Schema.Struct({
         description: "Maximum number of tokens from recent turns to preserve verbatim after compaction",
       }),
       reserved: Schema.optional(NonNegativeInt).annotate({
-        description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
+        description:
+          "Token buffer for compaction. Leaves enough window to avoid overflow during compaction (default: up to 33000, capped by the model's maximum output).",
       }),
+      max_context: Schema.optional(Schema.Union([TokenQuantity, Schema.Record(Schema.String, TokenQuantity)])).annotate(
+        {
+          description:
+            'Compact earlier than the model window. A token count (300000), a shorthand string ("300K", "1M", "50%"), ' +
+            'or a map keyed by "<providerID>/<modelID>" with wildcards ("openai/gpt-5*"). Always clamped to the ' +
+            "model's real window — it can only lower the compaction trigger, never raise it. 0 means no budget.",
+        },
+      ),
     }),
   ),
   checkpoint: Schema.optional(
@@ -264,10 +279,6 @@ const InfoSchema = Schema.Struct({
       }),
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer reserved for checkpoint operations. Default: 20000.",
-      }),
-      max_writer_failures: Schema.optional(PositiveInt).annotate({
-        description:
-          "Maximum consecutive writer failures per session before checkpointing stops retrying until process restart. Default: 3.",
       }),
       fork: Schema.optional(Schema.Boolean).annotate({
         description:
@@ -335,6 +346,10 @@ const InfoSchema = Schema.Struct({
   ),
   memory: Schema.optional(
     Schema.Struct({
+      disable_write: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Stop WRITING new memory. Default: false (memory is written). When true, no new memory is produced — session checkpoint.md, project MEMORY.md, notes.md and per-task progress.md are never written, the high-pressure 'save your learnings to memory' nudge is suppressed, and automatic dream/distill runs are skipped. Existing memory stays READABLE on demand: the builtin `memory` search tool keeps working and the files can still be read directly. What does stop is the AUTOMATIC injection — checkpoint rebuild is short-circuited to compaction while writing is off, and the memory dumps that a rebuild would have placed in context are only produced by that rebuild, so nothing is loaded on its own; an agent that wants memory has to search or read for it. Nothing is ever deleted — set it back to false to resume writing on top of the existing files.",
+      }),
       cc_index: Schema.optional(Schema.Boolean).annotate({
         description:
           "Index Claude Code memory (~/.claude/projects/<slug>/memory) and expose under scope='cc'. Default: false. Note: when enabled, every mimocode agent (build/explore/subagents) can search these memories via the builtin `memory` tool — including CC's `type: user` (your role/preferences) and `type: feedback` (your guidance) categories. CC originally writes them for future CC sessions; flipping this on widens the consumer set to mimocode agents on the same machine. Leave disabled (default) if you don't want personal context recallable from a prompt-injection-vulnerable agent.",
@@ -348,7 +363,7 @@ const InfoSchema = Schema.Struct({
     Schema.Struct({
       auto: Schema.optional(Schema.Boolean).annotate({
         description:
-          "Auto-trigger dream memory consolidation on new session start. Default: true.",
+          "Auto-trigger dream memory consolidation on new session start. Default: false.",
       }),
       interval_days: Schema.optional(NonNegativeInt).annotate({
         description: "Minimum days between automatic dream runs. Set to 0 to trigger on every new session. Default: 7.",
@@ -359,7 +374,7 @@ const InfoSchema = Schema.Struct({
     Schema.Struct({
       auto: Schema.optional(Schema.Boolean).annotate({
         description:
-          "Auto-trigger distill workflow packaging on new session start. Default: true.",
+          "Auto-trigger distill workflow packaging on new session start. Default: false.",
       }),
       interval_days: Schema.optional(NonNegativeInt).annotate({
         description: "Minimum days between automatic distill runs. Default: 30.",

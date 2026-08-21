@@ -4,17 +4,14 @@ import type { SessionID } from "../session/schema"
 
 const VALID_SCOPES = ["global", "projects", "sessions"] as const
 
-/** Agents confined to a write sandbox: they may only mutate files under the
- *  memory tree or the project's `.mimocode/` dir. Matches their stated purpose
- *  (dream: consolidate memory; distill: package skills/agents/commands under
- *  .mimocode). Everything else — source files, arbitrary worktree paths — is
- *  denied at the write gate, independent of their `write`/`edit` permission. */
+/** Agents that may write memory or the project's `.mimocode/` directory. The
+ *  checkpoint writer has a stricter memory-only policy below. */
 const WRITE_SANDBOXED_AGENTS: ReadonlySet<string> = new Set(["dream", "distill"])
 
 /**
- * Hard write-boundary for sandboxed system agents (dream/distill). Throws if
- * `agentName` is sandboxed and `target` is neither under the memory tree nor
- * under `<worktree>/.mimocode/`. Pure — does not touch the filesystem.
+ * Hard write-boundary for sandboxed system agents. checkpoint-writer is
+ * memory-only; dream/distill may also write under `<worktree>/.mimocode/`.
+ * Pure — does not touch the filesystem.
  *
  * This is enforced in the single write gate (assertWriteAllowed), so it cannot
  * be bypassed by a widened `write`/`edit` permission or a new write tool: those
@@ -29,8 +26,6 @@ export function assertAgentWriteSandbox(input: {
   memoryRoot: string
   worktree: string
 }): void {
-  if (!WRITE_SANDBOXED_AGENTS.has(input.agentName)) return
-
   // Resolve here rather than trusting the caller: write.ts/edit.ts pass an
   // absolute file_path THROUGH unnormalized, so a target like
   // `<worktree>/.mimocode/../src/x.ts` would string-prefix-match `.mimocode`
@@ -39,6 +34,17 @@ export function assertAgentWriteSandbox(input: {
   // callers.) The roots are resolved too so the comparison is apples-to-apples.
   const target = path.resolve(input.target)
   const memoryRoot = path.resolve(input.memoryRoot)
+  if (input.agentName === "checkpoint-writer") {
+    if (pathContains(memoryRoot, target)) return
+    throw new Error(
+      `Agent '${input.agentName}' may only write under the memory tree.\n` +
+        `  memory: ${memoryRoot}\n` +
+        `You attempted: ${input.target}.`,
+    )
+  }
+
+  if (!WRITE_SANDBOXED_AGENTS.has(input.agentName)) return
+
   const dotDir = path.resolve(input.worktree, ".mimocode")
   if (pathContains(memoryRoot, target) || pathContains(dotDir, target)) return
 
@@ -143,6 +149,11 @@ function isReservedForCheckpointWriter(parts: string[]): boolean {
  *   - For all other agents: cannot write <sid>/tasks/* — that's
  *     checkpoint-writer-only.
  *
+ * Both policies sit behind the memory write switch: when the caller passes
+ * `writeEnabled: false`, every write inside the memory tree is refused
+ * regardless of agent or path. Purity is preserved by taking the flag as a
+ * parameter — this module never reads config itself.
+ *
  * Non-memory paths and free keys under valid scopes pass through unmodified.
  */
 export function assertMemoryWriteAllowed(input: {
@@ -152,6 +163,8 @@ export function assertMemoryWriteAllowed(input: {
   projectID: ProjectID
   sessionID: SessionID
   taskId?: string
+  /** Whether memory writing is enabled. Omitted → enabled (the default). */
+  writeEnabled?: boolean
 }): void {
   const { target, agentName, memoryRoot, projectID, sessionID } = input
   const memoryFile = path.join(memoryRoot, "projects", projectID, "MEMORY.md")
@@ -160,6 +173,26 @@ export function assertMemoryWriteAllowed(input: {
   const taskMemDir = path.join(memoryRoot, "sessions", sessionID, "tasks")
   const normalizedRoot = memoryRoot.endsWith(path.sep) ? memoryRoot : memoryRoot + path.sep
   if (!target.startsWith(normalizedRoot)) return
+
+  // Memory write switch. Deliberately worded so the refusal cannot be mistaken
+  // for a path/permission problem — a model that reads "not allowed here" tends to
+  // retry a different memory path, which would just loop. Says WRITING is off, not
+  // that memory is off: existing memory is still readable. But it must not promise
+  // AUTOMATIC availability — while writing is off, checkpoint rebuild short-circuits
+  // to compaction, and the memory dumps only a rebuild produces never appear. So the
+  // reader is told to go get it, not that it will arrive. English only, like every
+  // other message this module throws: it has no locale to consult, and the consuming
+  // client that surfaces it carries its own translations.
+  if (input.writeEnabled === false) {
+    throw new Error(
+      `Memory WRITING is disabled: config \`memory.disable_write\` is true, so no new memory may be written.\n` +
+        `Refused: ${target}.\n` +
+        `Do NOT retry with another memory path — every path under ${memoryRoot} is refused while writing is off.\n` +
+        `Existing memory is still READABLE: the \`memory\` search tool works and you can read files under ${memoryRoot} directly.\n` +
+        `It is NOT loaded for you automatically while writing is off — checkpoint rebuild falls back to compaction, so search or read it explicitly when you need it.\n` +
+        `To re-enable, set \`memory.disable_write: false\` in config.`,
+    )
+  }
 
   const rel = path.relative(memoryRoot, target)
   const parts = rel.split(path.sep)
