@@ -39,9 +39,22 @@ if [[ "$FORCE" != "true" ]]; then
   fi
 fi
 
+# Snapshot the lockfile before building. bun's auto-install (fires during
+# `bun run build`) rewrites bun.lock URLs against the configured registry; the
+# repo-root .npmrc pins the official registry so rewrites are content-identical
+# and the file stays clean. If it DOES change, the pin is being bypassed
+# (e.g. NPM_CONFIG_REGISTRY env override) — warn loudly instead of letting the
+# pollution surface later as a mysterious dirty tree.
+LOCK_HASH_BEFORE="$(git hash-object "$MIMOCODE_REPO/bun.lock" 2>/dev/null || echo none)"
+
 if ! mimo_run_logged "$LOG" bun run --single build; then
   mimo_error "build failed; binary NOT replaced"
   exit 1
+fi
+
+LOCK_HASH_AFTER="$(git hash-object "$MIMOCODE_REPO/bun.lock" 2>/dev/null || echo none)"
+if [[ "$LOCK_HASH_BEFORE" != "$LOCK_HASH_AFTER" ]]; then
+  mimo_warn "bun.lock CHANGED during build — registry pin bypassed? inspect: git diff bun.lock (repo .npmrc pins registry.npmjs.org)"
 fi
 
 NEW_VERSION="$(mimo_built_version)"
