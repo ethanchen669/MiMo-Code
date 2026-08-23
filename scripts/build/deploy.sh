@@ -59,13 +59,36 @@ mimo_info "running: bun install --force (sync node_modules)"
 mimo_run_logged "$MIMOCODE_LOGS/bun-install-$(mimo_ts).log" \
   bash -c "cd '$MIMOCODE_HOME' && bun install --force"
 
-# Step 4: clean compose skill extraction
+# Step 5: clean compose skill extraction (old convention dir)
 if [[ -d "$MIMOCODE_COMPOSE_LATEST" ]]; then
   mimo_info "removing stale compose/latest"
   rm -rf "$MIMOCODE_COMPOSE_LATEST"
 fi
 
-# Step 5: verify
+# Step 6: GC stale runtime-extracted version dirs
+# builtin_skills/<version>/ and compose/<version>/ are runtime caches: each
+# binary extracts its own bundle into its version dir on first run and
+# re-extracts on demand when the marker mismatches (so a rolled-back binary
+# simply re-extracts — nothing is lost by deleting old dirs). Keep only the
+# deployed version and `local` (dev-build extraction root); without this GC
+# every build/deploy cycle accumulates another ~1.5-3M dir forever.
+mimo_gc_version_dirs() {
+  local dir="$1" label="$2" removed=0 name
+  [[ -n "$NEW_VERSION" && -d "$dir" ]] || { mimo_warn "GC skipped for $label"; return 0; }
+  while IFS= read -r -d '' entry; do
+    name="$(basename "$entry")"
+    [[ "$name" == "$NEW_VERSION" || "$name" == "local" ]] && continue
+    rm -rf "$entry"
+    removed=$((removed + 1))
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -print0)
+  if (( removed > 0 )); then
+    mimo_info "GC: removed $removed stale dir(s) under $label (kept: $NEW_VERSION, local)"
+  fi
+}
+mimo_gc_version_dirs "$MIMOCODE_BUILTIN_SKILLS_DIR" "builtin_skills"
+mimo_gc_version_dirs "$MIMOCODE_COMPOSE_DIR" "compose"
+
+# Step 7: verify
 DEPLOYED_VERSION="$(mimo_current_version)"
 if [[ "$DEPLOYED_VERSION" == "$NEW_VERSION" ]]; then
   mimo_info "deploy succeeded: mimo now at $DEPLOYED_VERSION"
