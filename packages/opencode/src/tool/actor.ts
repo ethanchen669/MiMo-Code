@@ -22,7 +22,8 @@ import { SYSTEM_SPAWNED_AGENT_TYPES } from "@/agent/config"
 import { TaskID } from "@/task/schema"
 import { SessionCheckpoint } from "@/session/checkpoint"
 import { inboxServiceRef } from "@/inbox/inbox-ref"
-import { Effect, Deferred } from "effect"
+import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
+import { Effect, Deferred, Context } from "effect"
 
 export interface ActorPromptOps {
   cancel(sessionID: SessionID): void
@@ -816,6 +817,49 @@ export const ActorTool = Tool.define(
         // the agent loop, and sending inbox notifications on terminal — replacing
         // the legacy session.create + manual fork path that lived here pre-Task-29.
         const actor = yield* requireActor()
+
+        // === Abort-during-spawn handling (ghost-actor fix) ===
+        // For a blocking run, `actor.spawn` JOINS the work fiber: it does not
+        // return until the subagent's work completes. A user abort therefore
+        // almost always lands MID-SPAWN — before the run path below could
+        // register any listener, and a listener attached to an already-aborted
+        // signal never fires. Register BEFORE spawn and cancel through the
+        // actorID from onReady (which fires before the join). The cancel
+        // interrupts the joined work, so spawn returns and the tool reports the
+        // cancelled outcome. Root-forked with the ambient context re-provided
+        // (InstanceRef + services) because Actor.cancel's InstanceState lookups
+        // need it — same pattern as EffectBridge.fork (src/effect/bridge.ts);
+        // a bare runFork would die silently.
+        const forkCtx = yield* Effect.context<never>()
+        const instanceRef = yield* InstanceRef
+        const workspaceRef = yield* WorkspaceRef
+        let cancelTarget: { sessionID: SessionID; actorID: string } | undefined
+        let abortFired = false
+        let cancelDispatched = false
+        const dispatchCancel = (target: { sessionID: SessionID; actorID: string }) => {
+          if (cancelDispatched) return
+          cancelDispatched = true
+          Effect.runFork(
+            actor.cancel(target.sessionID, target.actorID, "graceful").pipe(
+              Effect.provideService(InstanceRef, instanceRef),
+              Effect.provideService(WorkspaceRef, workspaceRef),
+              Effect.provide(forkCtx as Context.Context<never>),
+            ),
+          )
+        }
+        const spawnAbortHandler = () => {
+          abortFired = true
+          if (cancelTarget) dispatchCancel(cancelTarget)
+        }
+        // Only the BLOCKING run participates: a background spawn is
+        // fire-and-forget by design (the tool returns immediately and the
+        // result arrives as a notification later), so it must survive a parent
+        // abort.
+        if (op.action === "run") {
+          abortFired = ctx.abort.aborted
+          if (!abortFired) ctx.abort.addEventListener("abort", spawnAbortHandler)
+        }
+
         const spawnResult = yield* actor.spawn({
           mode: "subagent",
           sessionID: ctx.sessionID,
@@ -828,14 +872,21 @@ export const ActorTool = Tool.define(
           background,
           task_id: effectiveTaskId,
           onReady: ({ actorID, sessionID }) =>
-            ctx.metadata({
-              title: op.description,
-              metadata: { sessionId: sessionID, actorId: actorID, model },
+            Effect.gen(function* () {
+              cancelTarget = { sessionID, actorID }
+              // Abort raced ahead of onReady: the signal already fired with no
+              // way to address the actor. Cancel now.
+              if (abortFired) dispatchCancel(cancelTarget)
+              yield* ctx.metadata({
+                title: op.description,
+                metadata: { sessionId: sessionID, actorId: actorID, model },
+              })
             }),
           ...(op.output_schema
             ? { format: { type: "json_schema" as const, schema: op.output_schema, retryCount: 2 } }
             : {}),
         })
+        ctx.abort.removeEventListener("abort", spawnAbortHandler)
 
         if (op.action ==="spawn") {
           return {
@@ -853,12 +904,24 @@ export const ActorTool = Tool.define(
         // postStop loop), so the parent sees the reconciled status/summary —
         // unlike ActorWaiter, which resolves on the row's first `idle` and would
         // miss the gate's downgrade.
-        function cancelHandler() {
-          Effect.runFork(actor.cancel(spawnResult.sessionID, spawnResult.actorID, "graceful"))
+        //
+        // Abort-to-cancel for a blocking run is handled by spawnAbortHandler
+        // above: spawn JOINS the work fiber, so an abort almost always lands
+        // mid-spawn — by the time spawn returns, the work is done and there is
+        // nothing left to cancel. The listener below is a backstop for
+        // fiber-level interruption paths that bypass the signal (session
+        // teardown); `cancelled` keeps it idempotent against the spawn-time
+        // dispatch.
+        let cancelled = false
+        const cancelHandler = () => {
+          if (cancelled) return
+          cancelled = true
+          dispatchCancel({ sessionID: spawnResult.sessionID, actorID: spawnResult.actorID })
         }
         const outcome = yield* Effect.acquireUseRelease(
           Effect.sync(() => {
-            ctx.abort.addEventListener("abort", cancelHandler)
+            if (ctx.abort.aborted) cancelHandler()
+            else ctx.abort.addEventListener("abort", cancelHandler)
           }),
           () =>
             Deferred.await(spawnResult.outcome).pipe(
@@ -869,6 +932,11 @@ export const ActorTool = Tool.define(
             Effect.sync(() => {
               ctx.abort.removeEventListener("abort", cancelHandler)
             }),
+        ).pipe(
+          // Interruption of this tool fiber (user abort / session teardown)
+          // must not orphan a still-running subagent. runFork survives the
+          // dying fiber, so the graceful cancel completes.
+          Effect.onInterrupt(() => Effect.sync(() => cancelHandler())),
         )
 
         // Blocking run preserves the pre-unification contract: tool call fails

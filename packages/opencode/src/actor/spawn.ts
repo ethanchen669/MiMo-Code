@@ -320,6 +320,17 @@ export const layer = Layer.effect(
     const cancelling = new Set<string>()
     const cancelKey = (sessionID: SessionID, actorID: string) => `${sessionID}:${actorID}`
 
+    // Live work fibers per actor, keyed like `cancelling`. Actor.cancel
+    // interrupts the whole work fiber — not just the SessionRunState runner —
+    // because the runner only covers the CURRENT turn: a cancel that lands in
+    // an inter-turn gap (preStop re-entry, completion-gate re-entry, or a turn
+    // pending an LLM reply the runner no longer counts as busy) would
+    // otherwise leave the loop free to start another turn and the actor
+    // running forever (ghost-actor bug). Registered at fork, removed when the
+    // work settles (onSuccess/onFailure tails run even for an interrupt-only
+    // cause, so the map cannot leak entries for finished actors).
+    const workFibers = new Map<string, Fiber.Fiber<void, unknown>>()
+
     // Real agent loop: marks the actor running, then drives a SessionPrompt.prompt
     // turn. The user message persisted by SessionPrompt carries the actor's
     // agentID, which the projector writes to MessageTable.agent_id — that is the
@@ -748,10 +759,17 @@ export const layer = Layer.effect(
               }),
           }),
         )
-        const boundWork = input.instanceRef
+        const boundWork = (input.instanceRef
           ? work.pipe(Effect.provideService(InstanceRef, input.instanceRef))
           : work
+        ).pipe(
+          // Runs on the work fiber for EVERY terminal cause — success, failure,
+          // and interrupt-only (external cancel) — so the map entry cannot
+          // outlive the work.
+          Effect.ensuring(Effect.sync(() => workFibers.delete(cancelKey(input.sessionID, input.actorID)))),
+        )
         const fiber = yield* boundWork.pipe(Effect.forkIn(scope))
+        workFibers.set(cancelKey(input.sessionID, input.actorID), fiber)
         return { fiber, outcome }
       })
 
@@ -950,7 +968,23 @@ export const layer = Layer.effect(
         // Snapshot the actor row before cancelActor tears state down — we need
         // its mode/agent/background/parentActorID to decide + address the notify.
         const actor = yield* actorReg.get(sessionID, actorID)
+        // cancelActor FIRST: it interrupts the busy SessionRunState runner, so
+        // the in-flight turn (an LLM call the work fiber merely awaits) dies
+        // and the work fiber unwinds on its own. THEN interrupt the work fiber
+        // itself: cancelActor only covers the CURRENT turn — a cancel landing
+        // in an inter-turn gap (preStop/gate re-entry, or a turn not yet
+        // counted busy) would no-op there and let the loop start another turn,
+        // leaving the actor running forever (ghost-actor bug). The work fiber
+        // spans every turn, so interrupting it terminates the loop wherever it
+        // is; awaiting the interrupt AFTER cancelActor cannot deadlock, because
+        // the runner's death is what unblocks the work's unwind. The
+        // interrupt-only cause flows into matchCauseEffect's onFailure, which
+        // resolves the outcome Deferred as cancelled for any blocking parent.
+        // Noop for unknown/finished actors (interrupt on a dead fiber returns
+        // immediately).
         yield* state.cancelActor(sessionID, actorID)
+        const workFiber = workFibers.get(cancelKey(sessionID, actorID))
+        if (workFiber) yield* Fiber.interrupt(workFiber)
         yield* actorReg
           .updateStatus(sessionID, actorID, { status: "idle", lastOutcome: "cancelled" })
           .pipe(Effect.ignore)
