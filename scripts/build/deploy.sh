@@ -69,20 +69,22 @@ fi
 # builtin_skills/<version>/ and compose/<version>/ are runtime caches: each
 # binary extracts its own bundle into its version dir on first run and
 # re-extracts on demand when the marker mismatches (so a rolled-back binary
-# simply re-extracts — nothing is lost by deleting old dirs). Keep only the
-# deployed version and `local` (dev-build extraction root); without this GC
-# every build/deploy cycle accumulates another ~1.5-3M dir forever.
+# simply re-extracts — nothing is lost by deleting old dirs). Keep the newly
+# deployed version, the PREVIOUS version (CURRENT_VERSION: sessions started
+# on the just-replaced binary may still be running and hold catalog entries
+# pointing at that dir), and `local` (dev-build extraction root). Without
+# this GC every build/deploy cycle accumulates another ~1.5-3M dir forever.
 mimo_gc_version_dirs() {
   local dir="$1" label="$2" removed=0 name
   [[ -n "$NEW_VERSION" && -d "$dir" ]] || { mimo_warn "GC skipped for $label"; return 0; }
   while IFS= read -r -d '' entry; do
     name="$(basename "$entry")"
-    [[ "$name" == "$NEW_VERSION" || "$name" == "local" ]] && continue
+    [[ "$name" == "$NEW_VERSION" || "$name" == "$CURRENT_VERSION" || "$name" == "local" ]] && continue
     rm -rf "$entry"
     removed=$((removed + 1))
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -print0)
   if (( removed > 0 )); then
-    mimo_info "GC: removed $removed stale dir(s) under $label (kept: $NEW_VERSION, local)"
+    mimo_info "GC: removed $removed stale dir(s) under $label (kept: $NEW_VERSION, $CURRENT_VERSION, local)"
   fi
 }
 mimo_gc_version_dirs "$MIMOCODE_BUILTIN_SKILLS_DIR" "builtin_skills"

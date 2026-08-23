@@ -116,15 +116,26 @@ fi
 
 if [[ "$ACTION" == "gc-versions" ]]; then
   gc_dir() {
-    local dir="$1" label="$2" removed=0 name
+    local dir="$1" label="$2" removed=0 idx=0 name
     [[ -n "$CURRENT_VERSION" && -d "$dir" ]] || { mimo_warn "GC skipped for $label"; return 0; }
-    while IFS= read -r -d '' entry; do
+    # Keep `local` plus the two NEWEST version dirs (mtime order): the current
+    # binary's extraction and the immediately-previous one — sessions started
+    # on the replaced binary may still be running with catalog entries pointing
+    # at it (deleting it mid-session breaks compose:*/builtin skill loads).
+    while IFS= read -r entry; do
       name="$(basename "$entry")"
-      [[ "$name" == "$CURRENT_VERSION" || "$name" == "local" ]] && continue
-      rm -rf "$entry"
-      removed=$((removed + 1))
-    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -print0)
-    (( removed > 0 )) && mimo_info "GC: removed $removed stale dir(s) under $label (kept: $CURRENT_VERSION, local)"
+      [[ "$name" == "local" ]] && continue
+      idx=$((idx + 1))
+      if (( idx > 2 )); then
+        rm -rf "$entry"
+        removed=$((removed + 1))
+      fi
+    done < <(ls -dt "$dir"/*/ 2>/dev/null)
+    if (( removed > 0 )); then
+      mimo_info "GC: removed $removed stale dir(s) under $label (kept: 2 newest + local)"
+    else
+      mimo_info "GC: nothing stale under $label"
+    fi
     return 0
   }
   gc_dir "$MIMOCODE_BUILTIN_SKILLS_DIR" "builtin_skills"

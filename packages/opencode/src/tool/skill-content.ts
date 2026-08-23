@@ -12,12 +12,19 @@ export const renderSkillContent = Effect.fn("SkillContent.render")(function* (
   signal: AbortSignal,
 ) {
   const dir = path.dirname(info.location)
+  // Bundled (builtin/compose) skill directories are runtime-extracted per
+  // binary version and may be deleted mid-session by deploy GC (deploy.sh
+  // Step 6 / skill-audit.sh --gc-versions) while sessions still running the
+  // replaced binary keep catalog entries pointing at them. The SKILL.md
+  // content itself is already loaded in memory, so degrade to an empty file
+  // list instead of failing the whole load on ripgrep's ENOENT.
   const files = yield* rg.files({ cwd: dir, follow: false, hidden: true, signal }).pipe(
     Stream.filter((file) => !file.includes("SKILL.md")),
     Stream.map((file) => path.resolve(dir, file)),
     Stream.take(Flag.MIMOCODE_SKILL_SEARCH_FILE_SAMPLE_LIMIT),
     Stream.runCollect,
     Effect.map((chunk) => [...chunk].map((file) => `<file>${file}</file>`).join("\n")),
+    Effect.catch(() => Effect.succeed("")),
   )
 
   return {
