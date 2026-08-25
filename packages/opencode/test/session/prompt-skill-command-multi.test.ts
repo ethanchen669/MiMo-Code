@@ -77,10 +77,10 @@ describe("skill command with additional mentions", () => {
           const messages = (request.messages ?? []) as { role: string; content: unknown }[]
           const system = JSON.stringify(messages.filter((message) => message.role === "system"))
           const users = JSON.stringify(messages.filter((message) => message.role === "user"))
-          expect(system).not.toContain("Skills available in this session:")
+          expect(system).toContain("Skills available in this session:")
           expect(system).not.toContain("ALPHA_BODY_MARKER")
           expect(system).not.toContain("BETA_BODY_MARKER")
-          expect(users).toContain("Skills available in this session:")
+          expect(users).not.toContain("Skills available in this session:")
           expect(users).toContain("ALPHA_BODY_MARKER")
           expect(users).toContain("BETA_BODY_MARKER")
 
@@ -124,10 +124,19 @@ describe("skill command with additional mentions", () => {
           expect(visible.map((p) => (p.type === "text" ? p.text : ""))).toContain("/skill-alpha")
 
           const text = user!.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n")
-          expect(text).toContain("Skills available in this session:")
+          expect(text).not.toContain("Skills available in this session:")
           expect(text).toContain('<system-reminder>\n<skill_content name="skill-alpha">')
           expect(text).not.toContain("BETA_BODY_MARKER")
           expect(text).not.toContain("explicitly referenced multiple skills")
+
+          // The skills catalog lives in the system prompt, not in the user message.
+          const request = (yield* llm.inputs)[0]
+          const system = JSON.stringify(
+            ((request.messages ?? []) as { role: string; content: unknown }[]).filter(
+              (message) => message.role === "system",
+            ),
+          )
+          expect(system).toContain("Skills available in this session:")
 
           yield* sessions.remove(session.id)
         }),
@@ -253,13 +262,17 @@ describe("skill command with additional mentions", () => {
           expect(text).toContain('<system-reminder>\n<skill_content name="skill-gated">')
 
           // ...but the catalog the model reads must not list it, so the model
-          // cannot pick it up on its own in a later turn.
-          const catalog = user!.parts.flatMap((p) =>
-            p.type === "text" && p.text.includes("Skills available in this session:") ? [p.text] : [],
+          // cannot pick it up on its own in a later turn. The catalog lives in
+          // the system prompt.
+          const request = (yield* llm.inputs)[0]
+          const system = JSON.stringify(
+            ((request.messages ?? []) as { role: string; content: unknown }[]).filter(
+              (message) => message.role === "system",
+            ),
           )
-          expect(catalog).toHaveLength(1)
-          expect(catalog[0]).toContain("<name>skill-alpha</name>")
-          expect(catalog[0]).not.toContain("<name>skill-gated</name>")
+          expect(system).toContain("Skills available in this session:")
+          expect(system).toContain("<name>skill-alpha</name>")
+          expect(system).not.toContain("<name>skill-gated</name>")
 
           yield* sessions.remove(session.id)
         }),

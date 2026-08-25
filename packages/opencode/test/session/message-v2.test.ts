@@ -131,7 +131,7 @@ function basePart(messageID: string, id: string) {
 }
 
 describe("session.message-v2.toModelMessage", () => {
-  test("keeps one skills catalog and orders it after the other user content", async () => {
+  test("passes skill catalog reminder text through like ordinary text", async () => {
     const input: MessageV2.WithParts[] = [
       {
         info: userInfo("m-skills-first"),
@@ -169,15 +169,24 @@ describe("session.message-v2.toModelMessage", () => {
       {
         role: "user",
         content: [
-          { type: "text", text: "hello" },
-          { type: "text", text: "<system-reminder>other</system-reminder>" },
           {
             type: "text",
             text: "<system-reminder>\nSkills available in this session:\nFIRST\n</system-reminder>",
           },
+          { type: "text", text: "hello" },
+          { type: "text", text: "<system-reminder>other</system-reminder>" },
         ],
       },
-      { role: "user", content: [{ type: "text", text: "continue" }] },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "<system-reminder>\nSkills available in this session:\nSECOND\n</system-reminder>",
+          },
+          { type: "text", text: "continue" },
+        ],
+      },
     ])
   })
 

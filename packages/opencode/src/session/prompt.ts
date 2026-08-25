@@ -122,7 +122,6 @@ import {
 } from "@/tool/mcp-tool-search"
 import { isMcpToolSearchEnabled, usesGPTToolset } from "@/tool/gpt"
 import { GPT_TOP_LEVEL_TOOLS } from "@/tool/tool-script-ref"
-import { isSkillCatalogReminder, SKILL_CATALOG_REMINDER_MARKER } from "./skill-catalog"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -313,7 +312,11 @@ export const layer = Layer.effect(
         // parity, so fall through to empty rather than emit a divergent date.
         const captureSession = yield* sessions.get(input.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
         if (!captureSession) return empty
-        const [env, instructions] = yield* Effect.all([
+        const [skills, env, instructions] = yield* Effect.all([
+          sys.skills({
+            ...ag,
+            permission: Agent.runtimePermission(ag, captureSession.permission),
+          }),
           Flag.MIMOCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT
             ? sys.environment(model, captureSession.time.created)
             : Effect.succeed([]),
@@ -321,7 +324,10 @@ export const layer = Layer.effect(
         ])
         // (checkpoint-writer never requests json_schema output, so STRUCTURED_OUTPUT_SYSTEM_PROMPT
         // is not included; parent's runLoop adds it conditionally based on user.format)
-        const additions = Flag.MIMOCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT ? [...env, ...instructions.content] : []
+        const additions = [
+          ...(skills ? [skills] : []),
+          ...(Flag.MIMOCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT ? [...env, ...instructions.content] : []),
+        ]
         const prefix = yield* buildLLMRequestPrefix({
           sessionID: input.sessionID,
           agent: ag,
@@ -925,38 +931,6 @@ export const layer = Layer.effect(
       const runtimeAgent = {
         ...input.agent,
         permission: Agent.runtimePermission(input.agent, input.session.permission),
-      }
-      const skills = yield* sys.skills(runtimeAgent)
-      const catalogText = skills
-        ? ["<system-reminder>", SKILL_CATALOG_REMINDER_MARKER, skills, "</system-reminder>"].join("\n")
-        : undefined
-      const existingCatalogs = input.messages.flatMap((message) =>
-        message.parts.flatMap((part) =>
-          part.type === "text" && part.synthetic && !part.ignored && isSkillCatalogReminder(part.text)
-            ? [{ message, part }]
-            : [],
-        ),
-      )
-      const retainedCatalog = catalogText
-        ? existingCatalogs.findLast(({ part }) => part.text === catalogText)
-        : undefined
-      for (const existing of existingCatalogs) {
-        if (existing !== retainedCatalog) {
-          const updated = yield* sessions.updatePart({ ...existing.part, ignored: true })
-          const index = existing.message.parts.findIndex((part) => part.id === existing.part.id)
-          if (index >= 0) existing.message.parts[index] = updated
-        }
-      }
-      if (catalogText && !retainedCatalog) {
-        const part = yield* sessions.updatePart({
-          id: PartID.ascending(),
-          messageID: userMessage.info.id,
-          sessionID: userMessage.info.sessionID,
-          type: "text",
-          text: catalogText,
-          synthetic: true,
-        })
-        userMessage.parts.push(part)
       }
 
       const composeModeMsg = input.messages.find(
@@ -4094,7 +4068,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               }
             }
 
-            const [env, instructions] = yield* Effect.all([
+            const [skills, env, instructions] = yield* Effect.all([
+              sys.skills({
+                ...agent,
+                permission: Agent.runtimePermission(agent, session.permission),
+              }),
               Flag.MIMOCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT
                 ? sys.environment(model, session.time.created)
                 : Effect.succeed([]),
@@ -4111,6 +4089,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               }
             }
             const additions = [
+              ...(skills ? [skills] : []),
               ...(Flag.MIMOCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT ? [...env, ...instructions.content] : []),
               ...(format.type === "json_schema" ? [STRUCTURED_OUTPUT_SYSTEM_PROMPT] : []),
             ]
