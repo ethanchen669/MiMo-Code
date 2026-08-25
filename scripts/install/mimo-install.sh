@@ -84,7 +84,7 @@ tarball_agents = {
     'compose': {
         'description': "Orchestration mode for specs-driven development and skill-driven workflows",
         'mode': "primary",
-        'model': "openai-proxy/deepseek/deepseek-v4-pro",
+        'model': "openai-proxy/deepseek/deepseek-v4-flash",
         'tools': {"write": True, "edit": True},
         'permission': {"edit": {"docs/compose/*.md": "allow", "docs/compose/specs/*.md": "allow", "docs/compose/plans/*.md": "allow", "docs/compose/reports/*.md": "allow", "*": "deny"}}
     },
@@ -96,7 +96,7 @@ tarball_agents = {
     'security': {
         'description': "Security analysis mode. Dispatches to security-reviewer and other security specialists for vulnerability analysis, penetration testing, and threat modeling.",
         'mode': "primary",
-        'model': "openai-proxy/deepseek/deepseek-v4-pro",
+        'model': "openai-proxy/deepseek/deepseek-v4-flash",
         'tools': {"write": False, "edit": False},
         'permission': {"edit": {"docs/security/*.md": "allow", "docs/security/audits/*.md": "allow", "docs/security/threats/*.md": "allow", "security-audit-*.md": "allow", "threat-model-*.md": "allow", "*": "deny"}}
     },
