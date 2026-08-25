@@ -6,13 +6,7 @@ import type * as Provider from "./provider"
 import type * as ModelsDev from "./models"
 import { iife } from "@/util/iife"
 import { Flag } from "@/flag/flag"
-import {
-  compressImage,
-  DEFAULT_MAX_IMAGE_BYTES,
-  DEFAULT_MAX_IMAGE_DIMENSION,
-  imageDimensions,
-  supportsImageDimensions,
-} from "./image"
+import { compressImage, DEFAULT_MAX_IMAGE_BYTES } from "./image"
 
 type Modality = NonNullable<ModelsDev.Model["modalities"]>["input"][number]
 
@@ -876,21 +870,29 @@ function providerImageCap(model: Provider.Model): number {
   return 20 * 1024 * 1024 // 20MB — standard vision API limit
 }
 
+// Fork: the upstream 2000 px longest-edge dimension cap is disabled (always
+// Infinity). Image handling stays byte-cap-only, matching this fork's pre-merge
+// behavior — long screenshots / large images must reach vision models at full
+// resolution instead of being downsampled or replaced. Only the byte cap
+// (providerImageCap, and any MIMOCODE_MAX_PROMPT_IMAGE_SIZE override) applies.
 function providerImageDimensionCap(model: Provider.Model): number {
-  return providerImageCap(model) === Infinity ? Infinity : DEFAULT_MAX_IMAGE_DIMENSION
+  return Infinity
 }
 
 // Two responsibilities:
 // 1. Count cap (maxImages): drop the oldest excess *user* prompt images,
 //    including image-typed `file` parts produced by synthetic tool attachments.
-// 2. Byte/dimension caps: for EVERY image the provider would measure — user
+// 2. Byte cap (maxSize): for EVERY image the provider would measure — user
 //    `image`/image-`file` parts AND tool-result `media`/`image-data`/`file-data`
-//    parts on tool/assistant messages — recompress oversized ones under both
-//    limits, or strip them to a text placeholder.
+//    parts on tool/assistant messages — recompress oversized ones under the
+//    limit, or strip them to a text placeholder.
 //
-// The caps are provider-aware: Anthropic/Claude routes get the ~5 MB byte limit
-// and 2000 px longest-edge limit; other providers remain untouched unless the
-// explicit Flag.MIMOCODE_MAX_PROMPT_IMAGE_SIZE byte override is set.
+// The byte cap is PROVIDER-AWARE (providerImageCap): only Anthropic/Bedrock have
+// the ~5 MB hard limit, so only they get DEFAULT_MAX_IMAGE_BYTES; other providers
+// get the fork's 20 MB standard vision limit. There is no dimension cap
+// (providerImageDimensionCap is Infinity), so in-limit images pass through
+// untouched regardless of pixel size. An explicit Flag.MIMOCODE_MAX_PROMPT_IMAGE_SIZE
+// always wins when set.
 //
 // For the capped providers the size cap runs by default (no flag needed) because a
 // single >5 MB image in history otherwise 400s on every subsequent request and
@@ -935,19 +937,12 @@ function limitImages(msgs: ModelMessage[], model: Provider.Model): ModelMessage[
     )
   }
 
-  // Enforce byte and dimension caps on one tool-result content entry.
+  // Enforce the byte cap on one tool-result content entry.
   const capToolMedia = (entry: unknown) => {
     if (!isImageMediaEntry(entry)) return entry
     const size = base64ByteSize(entry.data)
-    const bytes = Buffer.from(entry.data, "base64")
-    const dimensions = imageDimensions(entry.mediaType, bytes)
-    if (
-      size <= maxSize &&
-      (!supportsImageDimensions(entry.mediaType) ||
-        (dimensions && Math.max(dimensions.width, dimensions.height) <= maxDimension))
-    )
-      return entry
-    const shrunk = compressImage(entry.mediaType, bytes, maxSize, maxDimension)
+    if (size <= maxSize) return entry
+    const shrunk = compressImage(entry.mediaType, Buffer.from(entry.data, "base64"), maxSize, maxDimension)
     if (shrunk) return { ...entry, data: shrunk.data, mediaType: shrunk.mediaType }
     return { type: "text" as const, text: OVERSIZE_PLACEHOLDER(size) }
   }
@@ -985,18 +980,12 @@ function limitImages(msgs: ModelMessage[], model: Provider.Model): ModelMessage[
         part.mediaType,
       )
       if (!payload) return part
+      if (payload.size <= maxSize) return part
       if (payload.mime?.startsWith("image/")) {
         const bytes =
           payload.kind === "bytes"
             ? Buffer.from(payload.bytes.buffer, payload.bytes.byteOffset, payload.bytes.byteLength)
             : Buffer.from(payload.base64, "base64")
-        const dimensions = imageDimensions(payload.mime, bytes)
-        if (
-          payload.size <= maxSize &&
-          (!supportsImageDimensions(payload.mime) ||
-            (dimensions && Math.max(dimensions.width, dimensions.height) <= maxDimension))
-        )
-          return part
         const shrunk = compressImage(payload.mime, bytes, maxSize, maxDimension)
         if (shrunk) {
           const data =

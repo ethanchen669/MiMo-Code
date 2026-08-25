@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { PNG } from "pngjs"
 import { ProviderTransform, type Provider } from "../../src/provider"
-import { DEFAULT_MAX_IMAGE_DIMENSION, imageDimensions } from "../../src/provider/image"
 import { ModelID, ProviderID } from "../../src/provider/schema"
 
 describe("ProviderTransform.options - setCacheKey", () => {
@@ -1578,18 +1577,20 @@ describe("ProviderTransform.message - provider-aware image size cap", () => {
     ["Gateway Claude", "gateway", "anthropic/claude-sonnet-4", "@ai-sdk/gateway"],
     ["OpenRouter Claude", "openrouter", "anthropic/claude-sonnet-4", "@openrouter/ai-sdk-provider"],
     ["Copilot Claude", "github-copilot", "claude-sonnet-4", "@ai-sdk/github-copilot"],
-  ])("%s scales a small-byte image whose edge exceeds 2000px", (_, providerID, apiID, npm) => {
+  ])("%s leaves a small-byte image whose edge exceeds 2000px untouched", (_, providerID, apiID, npm) => {
     const model = withApi(providerID, { id: apiID, url: "https://example.invalid", npm })
+    const image = `data:image/png;base64,${widePng}`
     const result = ProviderTransform.message(
-      [{ role: "user", content: [{ type: "image", image: `data:image/png;base64,${widePng}` }] }] as any[],
+      [{ role: "user", content: [{ type: "image", image }] }] as any[],
       model,
       {},
     )
     const part = (result[0].content as any[])[0]
+    // Byte cap only (fork: no dimension cap) — a small-byte wide image reaches
+    // the model at full resolution (gateways may still add cache marker
+    // providerOptions, so compare the image payload itself).
     expect(part.type).toBe("image")
-    const base64 = String(part.image).replace(/^data:[^;]+;base64,/, "")
-    const dimensions = imageDimensions(part.mediaType, Buffer.from(base64, "base64"))
-    expect(dimensions && Math.max(dimensions.width, dimensions.height)).toBe(DEFAULT_MAX_IMAGE_DIMENSION)
+    expect(part.image).toBe(image)
   })
 
   test("non-Claude gateway leaves the same over-2000px image untouched", () => {
@@ -1602,43 +1603,42 @@ describe("ProviderTransform.message - provider-aware image size cap", () => {
     expect(part).toEqual({ type: "image", image })
   })
 
-  test("malformed PNG becomes a placeholder instead of reaching Anthropic", () => {
+  test("malformed but small PNG passes through untouched (byte cap only)", () => {
     const model = withApi("anthropic", {
       id: "claude-sonnet-4",
       url: "https://api.anthropic.com",
       npm: "@ai-sdk/anthropic",
     })
-    const image = Buffer.from("not really a png").toString("base64")
+    const image = `data:image/png;base64,${Buffer.from("not really a png").toString("base64")}`
     const part = (
-      ProviderTransform.message(
-        [{ role: "user", content: [{ type: "image", image: `data:image/png;base64,${image}` }] }] as any[],
-        model,
-        {},
-      )[0].content as any[]
+      ProviderTransform.message([{ role: "user", content: [{ type: "image", image }] }] as any[], model, {})[0]
+        .content as any[]
     )[0]
-    expect(part.type).toBe("text")
-    expect(part.text).toContain("Image omitted")
+    // Byte cap only (fork: no dimension cap) — bytes are within the limit, so
+    // the undecodable image is not stripped.
+    expect(part).toEqual({ type: "image", image })
   })
 
   test.each([
     ["WebP", "image/webp", wideWebp],
     ["GIF", "image/gif", wideGif],
-  ])("small-byte over-2000px %s becomes a placeholder", (_, mime, data) => {
+  ])("leaves a small-byte over-2000px %s untouched", (_, mime, data) => {
     const model = withApi("anthropic", {
       id: "claude-sonnet-4",
       url: "https://api.anthropic.com",
       npm: "@ai-sdk/anthropic",
     })
+    const image = `data:${mime};base64,${data}`
     const part = (ProviderTransform.message(
-      [{ role: "user", content: [{ type: "image", image: `data:${mime};base64,${data}` }] }] as any[],
+      [{ role: "user", content: [{ type: "image", image }] }] as any[],
       model,
       {},
     )[0].content as any[])[0]
-    expect(part.type).toBe("text")
-    expect(part.text).toContain("Image omitted")
+    // Byte cap only (fork: no dimension cap) — small bytes, full resolution.
+    expect(part).toEqual({ type: "image", image })
   })
 
-  test("small-byte over-2000px WebP tool result becomes a placeholder", () => {
+  test("leaves a small-byte over-2000px WebP tool result untouched", () => {
     const model = withApi("anthropic", {
       id: "claude-sonnet-4",
       url: "https://api.anthropic.com",
@@ -1662,8 +1662,8 @@ describe("ProviderTransform.message - provider-aware image size cap", () => {
       {},
     )
     const entry = (result[0].content[0] as any).output.value[0]
-    expect(entry.type).toBe("text")
-    expect(entry.text).toContain("Image omitted")
+    // Byte cap only (fork: no dimension cap) — small bytes, full resolution.
+    expect(entry).toEqual({ type: "media", mediaType: "image/webp", data: wideWebp })
   })
 
   const userMsgs = () =>
