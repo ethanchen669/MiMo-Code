@@ -77,24 +77,38 @@ function file(directory: string) {
 /**
  * Where a running server advertises how to reach it, for `issue` to read.
  *
- * One file PER PROCESS, because every mimocode process that serves this project binds
- * its own loopback listener. A single `server.json` would make them overwrite each
- * other and hand a caller whichever session wrote last — reachable, but not the one
- * that spawned them. The pid in the name is also the liveness check (see `addresses`).
+ * One file PER LISTENER (pid + port). pid alone collides when one process binds
+ * two sockets for the same directory — the first stop would withdraw both. The
+ * pid is also the liveness check (see `addresses`).
  */
-export function addressFile(directory: string, pid = process.pid) {
-  return path.join(dir(directory), `server-${pid}.json`)
+export function addressFile(directory: string, pid = process.pid, port?: number) {
+  return path.join(dir(directory), port === undefined ? `server-${pid}.json` : `server-${pid}-${port}.json`)
 }
 
 export type Address = { pid: number; hostname: string; port: number; url: string; started: number }
 
 export async function publish(directory: string, address: Address) {
   await fs.mkdir(dir(directory), { recursive: true, mode: 0o700 })
-  await fs.writeFile(addressFile(directory, address.pid), JSON.stringify(address), { mode: 0o600 })
+  await fs.writeFile(addressFile(directory, address.pid, address.port), JSON.stringify(address), { mode: 0o600 })
 }
 
-export async function unpublish(directory: string, pid = process.pid) {
-  await fs.rm(addressFile(directory, pid), { force: true })
+/**
+ * Withdraw this process's advertisement.
+ *
+ * With `port`, only that listener is removed. Without it, every file for the pid
+ * goes — the form `stop()` uses when the caller did not track which socket died.
+ */
+export async function unpublish(directory: string, pid = process.pid, port?: number) {
+  if (port !== undefined) {
+    await fs.rm(addressFile(directory, pid, port), { force: true })
+    return
+  }
+  const names = await fs.readdir(dir(directory)).catch(() => [] as string[])
+  await Promise.all(
+    names
+      .filter((name) => name === `server-${pid}.json` || name.startsWith(`server-${pid}-`))
+      .map((name) => fs.rm(path.join(dir(directory), name), { force: true })),
+  )
 }
 
 /**
@@ -127,13 +141,13 @@ function fields(value: unknown): value is Record<string, unknown> {
  * nothing and turns it into an honest "nothing is running"; the dead file is removed
  * on the way past, so the directory does not accumulate one entry per crash.
  */
-export async function addresses(directory: string): Promise<Address[]> {
-  const names = await fs.readdir(dir(directory)).catch(() => [] as string[])
+async function addressesInBucket(bucket: string): Promise<Address[]> {
+  const names = await fs.readdir(bucket).catch(() => [] as string[])
   const found = await Promise.all(
     names
       .filter((name) => name.startsWith("server-") && name.endsWith(".json"))
       .map(async (name) => {
-        const target = path.join(dir(directory), name)
+        const target = path.join(bucket, name)
         const raw = await readJson(target)
         if (!fields(raw)) return undefined
         if (typeof raw["pid"] !== "number" || typeof raw["port"] !== "number") return undefined
@@ -155,16 +169,22 @@ export async function addresses(directory: string): Promise<Address[]> {
         }
       }),
   )
-  return found.filter((item): item is Address => item !== undefined).sort((a, b) => b.started - a.started)
+  return found.filter((item): item is Address => item !== undefined)
+}
+
+export async function addresses(directory: string): Promise<Address[]> {
+  return addressesInBucket(dir(directory)).then((list) => list.sort((a, b) => b.started - a.started))
 }
 
 /**
- * One live listener, or nothing.
+ * One live listener for this directory, or nothing.
  *
- * The most recently started, because with several sessions open on one project that is
- * the one a human just launched and therefore the one they mean. A CHILD process must
- * not resolve its endpoint this way — it is told the exact URL by whoever spawned it;
- * this is the fallback for a person at a shell.
+ * Cross-project discovery is deliberately NOT offered here. A multi-project host
+ * verifies tokens against the directory the request resolved to (`Instance.directory`,
+ * defaulting to the host's own cwd). An OpenAI-standard client sends only `base_url`
+ * and `Authorization`, so a cross-project fallback would print a URL that 401s —
+ * or 403s on `?directory=` unless the operator supplied a server password. Honest
+ * `null` beats a base_url that looks usable.
  */
 export async function address(directory: string): Promise<Address | undefined> {
   return (await addresses(directory))[0]

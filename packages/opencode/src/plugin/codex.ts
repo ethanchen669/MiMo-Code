@@ -148,7 +148,7 @@ async function refreshAccessToken(refreshToken: string, signal?: AbortSignal | n
 const HTML_SUCCESS = `<!doctype html>
 <html>
   <head>
-    <title>OpenCode - Codex Authorization Successful</title>
+    <title>MiMoCode - Codex Authorization Successful</title>
     <style>
       body {
         font-family:
@@ -179,7 +179,7 @@ const HTML_SUCCESS = `<!doctype html>
   <body>
     <div class="container">
       <h1>Authorization Successful</h1>
-      <p>You can close this window and return to OpenCode.</p>
+      <p>You can close this window and return to MiMoCode.</p>
     </div>
     <script>
       setTimeout(() => window.close(), 2000)
@@ -194,7 +194,7 @@ function escapeHtml(s: string): string {
 const HTML_ERROR = (error: string) => `<!doctype html>
 <html>
   <head>
-    <title>OpenCode - Codex Authorization Failed</title>
+    <title>MiMoCode - Codex Authorization Failed</title>
     <style>
       body {
         font-family:

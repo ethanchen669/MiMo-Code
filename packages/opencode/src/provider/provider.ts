@@ -27,6 +27,7 @@ import { AppFileSystem } from "@mimo-ai/shared/filesystem"
 import { isRecord } from "@/util/record"
 import { withStatics } from "@/util/schema"
 import { isFreeApiModel, isFreeApiSunset } from "@/util/free-api-sunset"
+import { usesMimoResponsesApi } from "../tool/gpt"
 
 import * as ProviderTransform from "./transform"
 import { ModelID, ProviderID } from "./schema"
@@ -38,6 +39,8 @@ const DEFAULT_CONTEXT_WINDOW = 1_000_000
 const BUILTIN_TIERS = new Set(["ultra", "standard", "lite"])
 // F41: warn once per (providerID, modelID) when limit.context falls back to default
 const warnedContextDefaults = new Set<string>()
+// defaultModel() runs per cheap task; warn once per stale cfg.model, not every call
+const warnedStaleDefaultModels = new Set<string>()
 
 export const DEFAULT_OPENAI_HEADER_TIMEOUT = 300_000
 export const DEFAULT_CHUNK_TIMEOUT = 480_000 // 8 minutes — bounds single-attempt SSE stall.
@@ -323,6 +326,14 @@ function custom(dep: CustomDep): Record<string, CustomLoader> {
           return sdk.responses(modelID)
         },
         options: { headerTimeout: DEFAULT_OPENAI_HEADER_TIMEOUT },
+      }),
+    xiaomi: () =>
+      Effect.succeed({
+        autoload: false,
+        async getModel(sdk: any, modelID: string, _options?: Record<string, any>) {
+          return usesMimoResponsesApi(modelID) ? sdk.responses(modelID) : sdk.languageModel(modelID)
+        },
+        options: {},
       }),
     xai: () =>
       Effect.succeed({
@@ -1092,7 +1103,7 @@ export interface Interface {
     query: string[],
   ) => Effect.Effect<{ providerID: ProviderID; modelID: string } | undefined>
   readonly getSmallModel: (providerID: ProviderID) => Effect.Effect<Model | undefined>
-  readonly getVisionModel: () => Effect.Effect<Model | undefined>
+  readonly getVisionModel: (providerID?: ProviderID) => Effect.Effect<Model | undefined>
   readonly resolveModelRef: (ref: string, contextProviderID?: ProviderID) => Effect.Effect<Model>
   readonly defaultModel: () => Effect.Effect<{ providerID: ProviderID; modelID: ModelID }>
 }
@@ -1719,7 +1730,14 @@ const layer: Layer.Layer<
           return wrapSSE(bounded, chunkTimeout, chunkAbortCtl)
         }
 
-        const bundledLoader = BUNDLED_PROVIDERS[model.api.npm]
+        const bundledLoader =
+          model.providerID === "xiaomi" && model.api.npm === "@ai-sdk/openai-compatible"
+            ? () =>
+                import("./sdk/copilot").then(
+                  (module) => (options: any) =>
+                    module.createOpenaiCompatible({ ...options, customToolNames: ["exec"] }),
+                )
+            : BUNDLED_PROVIDERS[model.api.npm]
         if (bundledLoader) {
           log.info("using bundled provider", {
             providerID: model.providerID,
@@ -1944,7 +1962,7 @@ const layer: Layer.Layer<
       return yield* resolveModelRef("lite", providerID)
     })
 
-    const getVisionModel = Effect.fn("Provider.getVisionModel")(function* () {
+    const getVisionModel = Effect.fn("Provider.getVisionModel")(function* (providerID?: ProviderID) {
       const cfg = yield* config.get()
       // Explicit vision_model literal wins. getModel raises ModelNotFoundError as
       // a defect, so a misconfigured vision_model must not propagate — catch it and
@@ -1954,21 +1972,37 @@ const layer: Layer.Layer<
         const explicit = yield* getModel(parsed.providerID, parsed.modelID).pipe(
           Effect.catchDefect(() => Effect.succeed(undefined)),
         )
-        if (explicit) return explicit
+        if (explicit && (!providerID || explicit.providerID === providerID)) return explicit
       }
       // Smart default: in-house preferred, then cheapest vision-capable model.
       const providers = yield* list()
       const vision = Object.values(providers)
+        .filter((info) => !providerID || info.id === providerID)
         .flatMap((info) => Object.values(info.models))
         .filter((m) => m.capabilities.input.image === true)
       return sortVisionModels(vision)[0]
     })
 
+    // Stable default chain. Product-priority substring ranking (`sort`) is for
+    // menus/listings, not for choosing a working default — Desktop's empty
+    // recent + router leftovers made that path pick unavailable models.
+    // Last-resort picks require a usable chat model (toolcall + text input +
+    // non-zero context): live openai id-asc starts at chatgpt-image-latest
+    // (tool_call false, context 0), which titles/agents cannot call.
     const defaultModel = Effect.fn("Provider.defaultModel")(function* () {
       const cfg = yield* config.get()
-      if (cfg.model) return parseModel(cfg.model)
-
       const s = yield* InstanceState.get(state)
+
+      if (cfg.model) {
+        const parsed = parseModel(cfg.model)
+        const provider = s.providers[parsed.providerID]
+        if (provider?.models[parsed.modelID]) return parsed
+        if (!warnedStaleDefaultModels.has(cfg.model)) {
+          warnedStaleDefaultModels.add(cfg.model)
+          log.warn("configured default model missing from registry, falling through", { model: cfg.model })
+        }
+      }
+
       const recent = yield* fs.readJson(path.join(Global.Path.state, "model.json")).pipe(
         Effect.map((x): { providerID: ProviderID; modelID: ModelID }[] => {
           if (!isRecord(x) || !Array.isArray(x.recent)) return []
@@ -1988,19 +2022,18 @@ const layer: Layer.Layer<
         return { providerID: entry.providerID, modelID: entry.modelID }
       }
 
-      const mimo = s.providers[ProviderID.make("mimo")]
-      if (mimo?.models[ModelID.make("mimo-auto")]) {
-        return { providerID: mimo.id, modelID: ModelID.make("mimo-auto") }
+      const allowed = Object.values(s.providers).filter((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id))
+      if (!allowed.length) throw new Error("no providers found")
+      for (const provider of allowed) {
+        const model = sortBy(
+          Object.values(provider.models).filter(
+            (m) => m.capabilities.toolcall && m.capabilities.input.text && (m.limit?.context ?? 1) > 0,
+          ),
+          [(m) => m.id, "asc"],
+        )[0]
+        if (model) return { providerID: provider.id, modelID: model.id }
       }
-
-      const provider = Object.values(s.providers).find((p) => !cfg.provider || Object.keys(cfg.provider).includes(p.id))
-      if (!provider) throw new Error("no providers found")
-      const [model] = sort(Object.values(provider.models))
-      if (!model) throw new Error("no models found")
-      return {
-        providerID: provider.id,
-        modelID: model.id,
-      }
+      throw new Error("no models found")
     })
 
     return Service.of({ list, getProvider, getModel, getLanguage, getSpeech, closest, getSmallModel, getVisionModel, defaultModel, resolveModelRef })

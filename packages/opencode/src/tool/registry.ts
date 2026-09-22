@@ -39,7 +39,6 @@ import { errorMessage } from "@/util/error"
 import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
-import { ChangeDirectoryTool } from "./change-directory"
 import { Glob } from "@mimo-ai/shared/util/glob"
 import path from "path"
 import { pathToFileURL } from "url"
@@ -74,8 +73,8 @@ import * as BashInteractive from "./bash-interactive"
 import { resolveInvocationStyle } from "./invocation-style"
 import { BuiltinWorkflow } from "@/workflow/builtin"
 import { ToolScriptTool, renderToolScriptDeclarations } from "./tool-script"
-import { GPT_TOP_LEVEL_TOOLS, toolScriptRegistry } from "./tool-script-ref"
-import { usesGPTToolset } from "./gpt"
+import { GPT_TOP_LEVEL_TOOLS, TOOL_SCRIPT_EXCLUDED, toolScriptRegistry } from "./tool-script-ref"
+import { type HarnessMode, usesGPTToolset } from "./gpt"
 
 const log = Log.create({ service: "tool.registry" })
 
@@ -120,11 +119,21 @@ export interface Interface {
   readonly ids: () => Effect.Effect<string[]>
   readonly all: () => Effect.Effect<Tool.Def[]>
   readonly named: () => Effect.Effect<{ actor: ActorDef; read: ReadDef }>
-  readonly tools: (model: { providerID: ProviderID; modelID: ModelID; agent: Agent.Info }) => Effect.Effect<Tool.Def[]>
+  readonly tools: (model: {
+    providerID: ProviderID
+    modelID: ModelID
+    apiModelID?: string
+    family?: string
+    agent: Agent.Info
+    harness?: HarnessMode
+  }) => Effect.Effect<Tool.Def[]>
   readonly registered: (model: {
     providerID: ProviderID
     modelID: ModelID
+    apiModelID?: string
+    family?: string
     agent: Agent.Info
+    harness?: HarnessMode
   }) => Effect.Effect<Tool.Def[]>
   readonly reload: () => Effect.Effect<void>
 }
@@ -162,7 +171,6 @@ export const layer = Layer.effect(
     const edit = yield* EditTool
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
-    const changedirtool = yield* ChangeDirectoryTool
     const skilltool = yield* SkillTool
     const skillsearch = yield* SkillSearchTool
     const mcptoolsearch = yield* McpToolSearchTool
@@ -261,7 +269,6 @@ export const layer = Layer.effect(
           skillsearch: Tool.init(skillsearch),
           mcptoolsearch: Tool.init(mcptoolsearch),
           patch: Tool.init(patchtool),
-          changedir: Tool.init(changedirtool),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           planexit: Tool.init(planexit),
@@ -296,7 +303,6 @@ export const layer = Layer.effect(
             tool.skillsearch,
             tool.skill,
             tool.patch,
-            tool.changedir,
             ...(Flag.MIMOCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
             tool.planexit,
             tool.planenter,
@@ -361,9 +367,12 @@ export const layer = Layer.effect(
     const available = Effect.fn("ToolRegistry.available")(function* (input: {
       providerID: ProviderID
       modelID: ModelID
+      apiModelID?: string
+      family?: string
       agent: Agent.Info
+      harness?: HarnessMode
     }) {
-      const useGPTTools = usesGPTToolset(input.modelID)
+      const useGPTTools = usesGPTToolset(input.modelID, input.harness, input.apiModelID, input.family)
       let filtered = (yield* all()).filter((tool) => {
         if (tool.id === ToolScriptTool.id) return useGPTTools || Flag.MIMOCODE_ENABLE_EXEC_TOOL
         if (tool.id === CodeSearchTool.id || tool.id === WebSearchTool.id) {
@@ -393,10 +402,18 @@ export const layer = Layer.effect(
       })
 
       if (input.agent.toolAllowlist) {
+        // Normalize to lowercase: models (e.g. MiniMax) emit capitalized tool
+        // names ("Bash" vs "bash") that must still pass the allowlist filter.
         const allowed = new Set(input.agent.toolAllowlist.map((s) => s.toLowerCase()))
+        const allowExecGateway =
+          useGPTTools &&
+          [...allowed].some((toolID) => !GPT_TOP_LEVEL_TOOLS.has(toolID) && !TOOL_SCRIPT_EXCLUDED.has(toolID))
         filtered = filtered.filter(
           (tool) =>
-            tool.id === "invalid" || tool.id === MCP_TOOL_SEARCH_ID || allowed.has(tool.id.toLowerCase()),
+            tool.id === "invalid" ||
+            tool.id === MCP_TOOL_SEARCH_ID ||
+            allowed.has(tool.id.toLowerCase()) ||
+            (tool.id === ToolScriptTool.id && allowExecGateway),
         )
       }
 
@@ -436,7 +453,14 @@ export const layer = Layer.effect(
       input ? available(input).pipe(Effect.map((result) => result.filtered)) : all()
 
     const definitions = Effect.fn("ToolRegistry.definitions")(function* (
-      input: { providerID: ProviderID; modelID: ModelID; agent: Agent.Info },
+      input: {
+        providerID: ProviderID
+        modelID: ModelID
+        apiModelID?: string
+        family?: string
+        agent: Agent.Info
+        harness?: HarnessMode
+      },
       includeHidden: boolean,
     ) {
       const availableTools = yield* available(input)

@@ -5,7 +5,7 @@ description: Use for multi-step feature work, bug fixes, or refactors where requ
 
 # Compose Next
 
-Compact end-to-end contract for grill → spec → workspace → implement → verify → review → finalize → finish. One skill load, no internal skill hand-offs.
+Compact end-to-end contract for grill → workspace → spec → implement → verify → review → finalize → finish. One skill load, no internal skill hand-offs.
 
 When writing a checkpoint or compacting context, preserve this recovery instruction in the checkpoint or compacted summary: on resumption, if the Compose Next instructions are absent, reload the `compose-next` skill before continuing.
 
@@ -19,7 +19,7 @@ Decide the shape of the work:
 
 - **Fully constrained mechanical change with no durable design surface** → skip Grill and Spec, go to Workspace then Implement.
 - **Requirements or design ambiguous** → Grill first.
-- **Requirements clear, feature deserves a durable document** → Spec first.
+- **Requirements clear, feature deserves a durable document** → Workspace then Spec.
 
 User gates and project overrides:
 
@@ -27,7 +27,7 @@ User gates and project overrides:
 - If the user explicitly says `without spec`, "no spec needed", "this is a small fix", or gives an equivalent instruction, skip the durable feature document and its spec gate. Keep verification and review when the task still warrants them.
 - An explicit project instruction, `AGENTS.md`, or user-provided agent/worktree configuration may define a project-specific worktree path, branch convention, spec path, or spec format. Use that configuration instead of the defaults in this skill. Record the override in the feature document or final report when it changes the normal artifact location.
 
-Every path passes through Workspace before Implement; no branch skips it.
+Every path passes through Workspace before Spec or Implement; no branch skips it.
 
 ## Grill — resolve decisions
 
@@ -53,9 +53,18 @@ If the `question` tool is unavailable or returns `[Never-Ask]`, resolve **this o
 
 Never-Ask applies to the current decision only. At every later decision point, call the `question` tool again — Never-Ask does not disable future questions or pause the workflow.
 
+## Workspace — worktree ownership
+
+Never begin implementation on `main` or `master` without explicit user consent. If the active workspace is already chosen, skip creation below and continue with toolchain setup.
+
+- Compare `git rev-parse --git-dir` with `git rev-parse --git-common-dir`. If they differ, use the current linked worktree; do not nest another. A non-empty `git rev-parse --show-superproject-working-tree` indicates a submodule, not a linked worktree.
+- Create a linked worktree at `.worktrees/<slug>` by default. Run `git check-ignore -q "$path"`; if it is not ignored, write `*` to `.worktrees/.gitignore`. Then run `git worktree add "$path" -b "$branch"`.
+- When targeting the worktree with a command, pass its absolute path as `workdir`; omitted `workdir` uses the current session directory.
+- Install dependencies per repository instructions. Prefer lockfile-frozen, hardlink-friendly modes (`bun ci`, `uv sync --frozen`) over commands that mutate the lockfile. Confirm the toolchain is usable before continuing.
+
 ## Spec — one document per feature
 
-Maintain one document per feature at `docs/compose/spec/<feature-name>.md` from the repository root. Do not add a date to the filename. A user-specified location overrides this path. Edit an existing document in place; never create a separate plan or report.
+Maintain one document per feature at `docs/compose/spec/<feature-name>.md` from the workspace root. Do not add a date to the filename. A user-specified location overrides this path. Edit an existing document in place; never create a separate plan or report. Do not write the feature document before Workspace owns the active workspace.
 
 ### Template
 
@@ -102,15 +111,6 @@ Before implementation, fix ambiguous requirements, contradictions, unresolved re
 
 Update only affected sections, bump `updated:`, preserve anchors, and keep only the tasks required by the amendment and their dependents. Do not regenerate the document or create duplicate tasks.
 
-## Workspace — worktree ownership
-
-Never begin implementation on `main` or `master` without explicit user consent.
-
-1. Compare `git rev-parse --git-dir` with `git rev-parse --git-common-dir`. If they differ, use the current linked worktree; do not nest another. A non-empty `git rev-parse --show-superproject-working-tree` indicates a submodule, not a linked worktree.
-2. Create a linked worktree at `.worktrees/<slug>` by default. Run `git check-ignore -q "$path"`; if it is not ignored, write `*` to `.worktrees/.gitignore`. Then run `git worktree add "$path" -b "$branch"`.
-3. Once the worktree path is resolved, use MiMoCode's `change_directory` tool to switch into it and continue the workflow there.
-4. Install dependencies per repository instructions. Prefer lockfile-frozen, hardlink-friendly modes (`bun ci`, `uv sync --frozen`) over commands that mutate the lockfile. Confirm the toolchain is usable before continuing.
-
 ## Implement
 
 Use the feature document as the source of requirements, or the conversation for an undocumented mechanical change. When a feature document exists, set its `status: in-progress` on the first implementation commit. Execute tasks in dependency order. Track multi-step work with the `task` tool.
@@ -123,7 +123,7 @@ For failures, reproduce before editing and identify the root cause from errors, 
 
 ### Parallel work
 
-Dispatch independent tasks in parallel when isolation prevents collisions; keep tightly coupled work together. Prefer giving parallel subagents disjoint file sets and keeping commits with the orchestrator. Give each subagent the worktree path, task, acceptance criteria, relevant spec sections, and required verification. Do not pass session history. Treat its report as a claim and inspect the resulting diff.
+Dispatch independent tasks in parallel when isolation prevents collisions; keep tightly coupled work together. Prefer giving parallel subagents disjoint file sets and keeping commits with the orchestrator. Give each subagent the workspace path, task, acceptance criteria, relevant spec sections, and required verification. Do not pass session history. Treat its report as a claim and inspect the resulting diff.
 
 Continue through tasks without routine approval pauses. Stop only for an unresolved product decision, a blocker that cannot be worked around, a destructive action requiring consent, or completion.
 
@@ -140,8 +140,10 @@ After implementation is verified and before finalizing the feature document, dis
 Provide the reviewer:
 
 - the applicable spec sections and acceptance criteria;
-- the worktree path, base branch, base SHA, head SHA, and exact diff command or precomputed diff;
+- the workspace path, base branch, base SHA, head SHA, and exact diff command or precomputed diff;
 - a compact verification summary: one line per command with `PASS`, `FAIL`, or `PRE-EXISTING`, plus test counts when available. Do not paste full command output unless a specific failure requires it.
+
+If there is no feature document, take acceptance criteria from the conversation. If none are explicit, ask the user for them before dispatching the reviewer.
 
 Do not provide an implementer-authored narrative. The reviewer may inspect the diff and run additional commands needed to validate its conclusions. It must not repeat a command already reported as passing, especially a heavy E2E suite, unless the result is stale, the code changed afterward, or concrete evidence makes the result suspect. Before any justified rerun, confirm no equivalent command is still running. Missing evidence should be reported or gathered with the cheapest non-duplicative command.
 
@@ -149,9 +151,9 @@ Use a reviewer model at least as capable as the strongest implementer it reviews
 
 Require separate conclusions for:
 
-1. **Spec compliance** — every acceptance criterion is met and points to evidence in the diff or reviewer-observed command output.
-2. **Correctness** — logic, boundaries, error handling, regressions, and tests are sound, including issues outside the written spec.
-3. **Codebase consistency** — naming, structure, and local conventions match surrounding code.
+- **Spec compliance** — every acceptance criterion is met and points to evidence in the diff or reviewer-observed command output.
+- **Correctness** — logic, boundaries, error handling, regressions, and tests are sound, including issues outside the written spec.
+- **Codebase consistency** — naming, structure, and local conventions match surrounding code.
 
 Classify unmet or unverifiable acceptance criteria and correctness bugs as critical. Fix critical findings, re-verify, and re-review affected areas. Reject incorrect findings with technical evidence. If the fix-and-re-review loop stops converging — repeated findings on the same area, or fixes that introduce new criticals — stop looping and report the impasse with the remaining findings instead of forcing a pass.
 
@@ -161,7 +163,7 @@ For parallel task work, review integrated task diffs at useful boundaries only w
 
 ## Finalize — commit the feature document
 
-After review passes, before finishing the branch, finalize the feature document:
+If a feature document exists, after review passes and before finishing the branch:
 
 1. Set `status: delivered`, bump `updated:`, and record the reviewed range as `<base-sha>..<head-sha>`.
 2. Check off completed tasks; leave incomplete tasks unchecked and do not claim delivery if they block acceptance.
@@ -181,7 +183,7 @@ Update a design section only when it contradicts the delivered behavior. Commit 
 
 ## Finish
 
-Do not auto-finish. After Finalize, report branch, base, head SHA, worktree, feature-doc path, and suggest a closing action.
+Do not auto-finish. After Finalize, report branch, base, head SHA, workspace, feature-doc path when available, and suggest a closing action.
 
 If the user asks to finish but the path is unclear, use the `question` tool to settle:
 

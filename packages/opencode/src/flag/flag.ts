@@ -24,6 +24,16 @@ function nonNegativeNumber(key: string) {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : undefined
 }
 
+// A fraction in (0, 1], written either as a decimal ("0.85") or a percentage
+// ("85%"). Values outside the range — and anything unparseable — yield undefined
+// so the caller keeps its own default.
+function ratio(key: string) {
+  const value = process.env[key]?.trim()
+  if (!value) return undefined
+  const parsed = value.endsWith("%") ? Number(value.slice(0, -1)) / 100 : Number(value)
+  return Number.isFinite(parsed) && parsed > 0 && parsed <= 1 ? parsed : undefined
+}
+
 const MIMOCODE_EXPERIMENTAL = truthy("MIMOCODE_EXPERIMENTAL")
 
 // Defaults to false. When enabled, mimocode runs in pure-mimo mode:
@@ -139,11 +149,35 @@ export const Flag = {
     return truthy("MIMOCODE_DISABLE_CHECKPOINT")
   },
   MIMOCODE_DISABLE_AUTOCOMPACT: truthy("MIMOCODE_DISABLE_AUTOCOMPACT"),
+  // Default compaction trigger, used when `compaction.max_context` is not set in
+  // config. Same grammar as that config field: an absolute token count
+  // ("300000"), a shorthand ("300K", "1M"), or a percentage of the model window
+  // ("50%"). Clamped to the model window — it can only lower the trigger, never
+  // raise it. An explicit `compaction.max_context` in config overrides this.
+  // Pairs with MIMOCODE_DISABLE_CHECKPOINT: on the checkpoint-off fallback path
+  // this is how the compaction threshold is tuned via env alone. Read lazily so
+  // tests and in-process embedders can toggle it at runtime.
+  get MIMOCODE_COMPACTION_MAX_CONTEXT() {
+    return process.env["MIMOCODE_COMPACTION_MAX_CONTEXT"]
+  },
+  // Fraction of the working window at which compaction fires; the remaining
+  // headroom is what the summary generation gets to write into. Accepts a decimal
+  // ("0.85") or a percentage ("85%"); anything unparseable or outside (0, 1] is
+  // ignored and the 0.9 default stands. Applies on top of whatever window
+  // `compaction.max_context` / MIMOCODE_COMPACTION_MAX_CONTEXT resolved to, so
+  // the two compose rather than override each other. Read lazily so tests and
+  // in-process embedders can toggle it at runtime.
+  get MIMOCODE_COMPACTION_TRIGGER_RATIO() {
+    return ratio("MIMOCODE_COMPACTION_TRIGGER_RATIO") ?? 0.9
+  },
   MIMOCODE_DISABLE_MODELS_FETCH: truthy("MIMOCODE_DISABLE_MODELS_FETCH"),
-  // Defaults to false. When enabled, every model uses the GPT system prompt
-  // and Codex toolset regardless of its model ID.
+  // Defaults to automatic model inference. Explicit true forces every model to
+  // use the GPT system prompt and Codex toolset; explicit false forces even GPT
+  // models to use the default prompt and toolset.
   get MIMOCODE_CODEX_MODE() {
-    return truthy("MIMOCODE_CODEX_MODE")
+    if (truthy("MIMOCODE_CODEX_MODE")) return true
+    if (falsy("MIMOCODE_CODEX_MODE")) return false
+    return undefined
   },
   MIMOCODE_DISABLE_MOUSE: truthy("MIMOCODE_DISABLE_MOUSE"),
   MIMOCODE_OUTPUT_LENGTH_CONTINUATION_LIMIT: number("MIMOCODE_OUTPUT_LENGTH_CONTINUATION_LIMIT") ?? 3,
@@ -251,10 +285,21 @@ export const Flag = {
   // enable try-best loop detection, automatic turn pausing, and handoff UI.
   MIMOCODE_ENABLE_TRY_BEST_HANDOFF: truthy("MIMOCODE_ENABLE_TRY_BEST_HANDOFF"),
 
-  // Defaults to false. Opt in to append runtime-derived environment and
-  // instruction-file content to the model's system prompt.
+  // Defaults to false. Opt in to append the runtime-derived environment block
+  // (working directory, platform, shell, git status/branch/commits) to the model's
+  // system prompt. Instruction files (AGENTS.md / CLAUDE.md) are appended
+  // regardless — suppress the whole block with MIMOCODE_DISABLE_INSTRUCTIONS, or
+  // individual sources with MIMOCODE_DISABLE_PROJECT_CONFIG /
+  // MIMOCODE_DISABLE_CLAUDE_CODE_PROMPT.
   get MIMOCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT() {
     return truthy("MIMOCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT")
+  },
+
+  // Defaults to false (enabled): instruction-file content (AGENTS.md / CLAUDE.md)
+  // is appended to the model's system prompt. Set MIMOCODE_DISABLE_INSTRUCTIONS=true
+  // to drop the whole instruction block regardless of which files resolve.
+  get MIMOCODE_DISABLE_INSTRUCTIONS() {
+    return truthy("MIMOCODE_DISABLE_INSTRUCTIONS")
   },
 
   // Defaults to false. The edit tool does pure exact-string matching with

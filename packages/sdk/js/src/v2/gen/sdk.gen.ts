@@ -33,6 +33,8 @@ import type {
   ExperimentalConsoleSwitchOrgResponses,
   ExperimentalResourceListResponses,
   ExperimentalSessionListResponses,
+  ExperimentalTitleGenerateErrors,
+  ExperimentalTitleGenerateResponses,
   ExperimentalWorkspaceAdaptorListResponses,
   ExperimentalWorkspaceCreateErrors,
   ExperimentalWorkspaceCreateResponses,
@@ -168,6 +170,10 @@ import type {
   SessionPromptAsyncResponses,
   SessionPromptErrors,
   SessionPromptResponses,
+  SessionRecoveryErrors,
+  SessionRecoveryResponses,
+  SessionResumeErrors,
+  SessionResumeResponses,
   SessionRevertErrors,
   SessionRevertResponses,
   SessionShareErrors,
@@ -222,6 +228,8 @@ import type {
   WorkflowResumeResponses,
   WorkflowStructureResponses,
   WorkflowTranscriptResponses,
+  WorktreeAutoErrors,
+  WorktreeAutoResponses,
   WorktreeCreateErrors,
   WorktreeCreateInput,
   WorktreeCreateResponses,
@@ -925,6 +933,64 @@ export class Console extends HeyApiClient {
   }
 }
 
+export class Title extends HeyApiClient {
+  /**
+   * Generate conversation title
+   *
+   * Generate a short conversation title with the configured lite model and deterministic fallback.
+   */
+  public generate<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      text?: string
+      parts?: Array<
+        | {
+            type: "text"
+            text: string
+          }
+        | {
+            type: "image"
+            data: string
+            mime: "image/jpeg" | "image/png" | "image/webp" | "image/gif"
+            filename?: string
+          }
+      >
+      locale?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "text" },
+            { in: "body", key: "parts" },
+            { in: "body", key: "locale" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalTitleGenerateResponses,
+      ExperimentalTitleGenerateErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/title",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Session extends HeyApiClient {
   /**
    * List sessions
@@ -1010,6 +1076,11 @@ export class Experimental extends HeyApiClient {
   private _console?: Console
   get console(): Console {
     return (this._console ??= new Console({ client: this.client }))
+  }
+
+  private _title?: Title
+  get title(): Title {
+    return (this._title ??= new Title({ client: this.client }))
   }
 
   private _session?: Session
@@ -1724,6 +1795,36 @@ export class Worktree extends HeyApiClient {
       },
     })
   }
+
+  /**
+   * Auto-create worktree on conflict
+   *
+   * Check for conflicts and auto-create a worktree if needed.
+   */
+  public auto<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<WorktreeAutoResponses, WorktreeAutoErrors, ThrowOnError>({
+      url: "/experimental/worktree/auto",
+      ...options,
+      ...params,
+    })
+  }
 }
 
 export class Session2 extends HeyApiClient {
@@ -2411,7 +2512,10 @@ export class Session2 extends HeyApiClient {
         [key: string]: boolean
       }
       format?: OutputFormat
+      titleLocale?: string
       system?: string
+      systemMode?: "append" | "replace-agent"
+      harness?: "auto" | "codex" | "default"
       variant?: string
       parts?: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
     },
@@ -2436,7 +2540,10 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "noReply" },
             { in: "body", key: "tools" },
             { in: "body", key: "format" },
+            { in: "body", key: "titleLocale" },
             { in: "body", key: "system" },
+            { in: "body", key: "systemMode" },
+            { in: "body", key: "harness" },
             { in: "body", key: "variant" },
             { in: "body", key: "parts" },
           ],
@@ -2528,6 +2635,80 @@ export class Session2 extends HeyApiClient {
   }
 
   /**
+   * List interrupted turn recovery candidates
+   *
+   * Return the latest incomplete assistant turn that can be resumed without creating a user message.
+   */
+  public recovery<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      agentID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "agentID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionRecoveryResponses, SessionRecoveryErrors, ThrowOnError>({
+      url: "/session/{sessionID}/recovery",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Resume an interrupted turn
+   *
+   * Resume an incomplete assistant turn without creating another user message.
+   */
+  public resume<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      assistantMessageID: string
+      directory?: string
+      workspace?: string
+      agentID?: string
+      task_id?: string
+      titleLocale?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "path", key: "assistantMessageID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "agentID" },
+            { in: "query", key: "task_id" },
+            { in: "query", key: "titleLocale" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionResumeResponses, SessionResumeErrors, ThrowOnError>({
+      url: "/session/{sessionID}/turn/{assistantMessageID}/resume",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
    * Send async message
    *
    * Create and send a new message to a session asynchronously, starting the session if needed and returning immediately.
@@ -2553,7 +2734,10 @@ export class Session2 extends HeyApiClient {
         [key: string]: boolean
       }
       format?: OutputFormat
+      titleLocale?: string
       system?: string
+      systemMode?: "append" | "replace-agent"
+      harness?: "auto" | "codex" | "default"
       variant?: string
       parts?: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
     },
@@ -2578,7 +2762,10 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "noReply" },
             { in: "body", key: "tools" },
             { in: "body", key: "format" },
+            { in: "body", key: "titleLocale" },
             { in: "body", key: "system" },
+            { in: "body", key: "systemMode" },
+            { in: "body", key: "harness" },
             { in: "body", key: "variant" },
             { in: "body", key: "parts" },
           ],
@@ -2612,7 +2799,11 @@ export class Session2 extends HeyApiClient {
       model?: string
       arguments?: string
       command?: string
+      titleLocale?: string
       variant?: string
+      system?: string
+      systemMode?: "append" | "replace-agent"
+      harness?: "auto" | "codex" | "default"
       parts?: Array<{
         id?: string
         type: "file"
@@ -2637,7 +2828,11 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "model" },
             { in: "body", key: "arguments" },
             { in: "body", key: "command" },
+            { in: "body", key: "titleLocale" },
             { in: "body", key: "variant" },
+            { in: "body", key: "system" },
+            { in: "body", key: "systemMode" },
+            { in: "body", key: "harness" },
             { in: "body", key: "parts" },
           ],
         },

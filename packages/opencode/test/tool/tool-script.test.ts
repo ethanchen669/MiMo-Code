@@ -7,7 +7,8 @@ import path from "path"
 import { evalScript } from "../../src/workflow/sandbox"
 import { Agent } from "../../src/agent/agent"
 import { Truncate, Tool } from "../../src/tool"
-import { ToolScriptTool, renderToolScriptDeclarations } from "../../src/tool/tool-script"
+import { ToolScriptTool, renderToolScriptDeclarations, viewExecSubtools, type ExecSubPartSnapshot } from "../../src/tool/tool-script"
+import { RecoverableError } from "../../src/tool/recoverable"
 import { toolScriptRegistry, TOOL_SCRIPT_EXCLUDED } from "../../src/tool/tool-script-ref"
 import { Instance } from "../../src/project/instance"
 
@@ -95,6 +96,7 @@ async function runToolScript(
     timeoutMs?: number
     toolWhitelist?: string[]
     mcp?: Record<string, any>
+    onMetadata?: (metadata: Record<string, unknown>) => void
   },
 ) {
   const prev = toolScriptRegistry.current
@@ -123,7 +125,8 @@ async function runToolScript(
                 ...(opts?.mcp ? { execMcp: { current: opts.mcp } } : {}),
               },
               messages: [],
-              metadata: () => Effect.void,
+              metadata: (value) =>
+                Effect.sync(() => opts?.onMetadata?.((value.metadata ?? {}) as Record<string, unknown>)),
               ask: opts?.ask ?? (() => Effect.void),
             },
           ),
@@ -205,6 +208,188 @@ describe("exec", () => {
     })
   })
 
+  test("retains each nested tool metadata and actor reference", async () => {
+    const parameters = z.object({ operation: z.object({ action: z.string() }) })
+    const actor: Tool.Def<typeof parameters> = {
+      id: "actor",
+      description: "fake actor",
+      parameters,
+      execute: (args, ctx) =>
+        Effect.gen(function* () {
+          yield* ctx.metadata({
+            title: "Starting child",
+            metadata: { sessionId: "ses_child", actorId: "general-1", model: "test/model" },
+          })
+          return {
+            title: "Child task",
+            output: `action:${args.operation.action}`,
+            metadata: { sessionId: "ses_child", actorId: "general-1", model: "test/model" },
+          }
+        }),
+    }
+    const result = await runToolScript(
+      `return await tools.actor({ operation: { action: "spawn" } })`,
+      [actor],
+    )
+    const records = result.metadata.sub_parts as ExecSubPartSnapshot[]
+
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      seq: 1,
+      callID: "call_test:1",
+      tool: "actor",
+      state: {
+        status: "completed",
+        title: "Child task",
+        input: { operation: { action: "spawn" } },
+        output: "action:spawn",
+        metadata: { sessionId: "ses_child", actorId: "general-1", model: "test/model" },
+      },
+    })
+    expect(viewExecSubtools(result.metadata)).toEqual(records)
+  })
+
+  test("views partial exec snapshots without evaluating or filling missing calls", () => {
+    const metadata = {
+      exec_schema: 1,
+      sub_parts: [
+        {
+          seq: 2,
+          type: "tool",
+          callID: "outer:2",
+          tool: "read",
+          state: { status: "running", input: { file_path: "b.txt" }, time: { start: 20 } },
+        },
+        {
+          seq: 1,
+          type: "tool",
+          callID: "outer:1",
+          tool: "bash",
+          state: {
+            status: "completed",
+            input: { command: "echo a" },
+            title: "Run command",
+            output: "a",
+            metadata: { exit: 0 },
+            time: { start: 10, end: 11 },
+          },
+        },
+        {
+          seq: 1,
+          type: "tool",
+          callID: "outer:duplicate",
+          tool: "bash",
+          state: {
+            status: "completed",
+            input: { command: "echo duplicate" },
+            title: "Duplicate",
+            output: "duplicate",
+            time: { start: 12, end: 13 },
+          },
+        },
+        { seq: "bad", type: "tool" },
+      ],
+    }
+
+    expect(viewExecSubtools(metadata).map((part) => part.callID)).toEqual(["outer:1", "outer:2"])
+    expect(viewExecSubtools({ exec_schema: 2, sub_parts: metadata.sub_parts })).toEqual([])
+  })
+
+  test("preserves scalar nested input and filters malformed persisted attachments", () => {
+    const metadata = {
+      exec_schema: 1,
+      sub_parts: [{
+        seq: 1,
+        type: "tool",
+        callID: "outer:1",
+        tool: "scalar_mcp",
+        state: {
+          status: "completed",
+          input: "literal",
+          title: "Scalar",
+          output: "ok",
+          time: { start: 1, end: 2 },
+          attachments: [{ bad: true }, { type: "file", mime: "text/plain", url: "data:text/plain;base64, b2s=" }],
+        },
+      }],
+    }
+    const part = viewExecSubtools(metadata)[0]
+    expect(part?.state.input).toBe("literal")
+    expect(part?.state.attachments).toEqual([{ type: "file", mime: "text/plain", url: "data:text/plain;base64, b2s=" }])
+  })
+
+  test("publishes a running nested part before the nested tool settles", async () => {
+    const parameters = z.object({ value: z.string() })
+    const slow: Tool.Def<typeof parameters> = {
+      id: "slow",
+      description: "fake slow tool",
+      parameters,
+      execute: (_args, ctx) =>
+        Effect.gen(function* () {
+          yield* ctx.metadata({ metadata: { phase: "started" } })
+          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 30)))
+          return { title: "Slow", output: "done", metadata: { phase: "done" } }
+        }),
+    }
+    const live: ExecSubPartSnapshot[] = []
+    const result = await runToolScript(`return await tools.slow({ value: "x" })`, [slow], undefined, {
+      onMetadata: (metadata) => {
+        const part = viewExecSubtools(metadata)[0]
+        if (part) live.push(part)
+      },
+    })
+
+    expect(live.some((part) => part.state.status === "running")).toBe(true)
+    expect(viewExecSubtools(result.metadata)[0]?.state.status).toBe("completed")
+  })
+
+  test("coalesces live metadata and flushes the latest snapshot at exec terminal", async () => {
+    const parameters = z.object({ value: z.string() })
+    const noisy: Tool.Def<typeof parameters> = {
+      id: "noisy",
+      description: "fake noisy tool",
+      parameters,
+      execute: (_args, ctx) =>
+        Effect.gen(function* () {
+          yield* ctx.metadata({ metadata: { phase: "one" } })
+          yield* ctx.metadata({ metadata: { phase: "two" } })
+          yield* ctx.metadata({ metadata: { phase: "three" } })
+          return { title: "Noisy", output: "done", metadata: { phase: "done" } }
+        }),
+    }
+    const live: ExecSubPartSnapshot[] = []
+    const result = await runToolScript(`return await tools.noisy({ value: "x" })`, [noisy], undefined, {
+      onMetadata: (metadata) => {
+        const part = viewExecSubtools(metadata)[0]
+        if (part) live.push(part)
+      },
+    })
+
+    expect(live).toHaveLength(2)
+    expect(live[0]?.state.status).toBe("running")
+    expect(live[1]?.state.status).toBe("completed")
+    expect(live[1]?.state.metadata).toEqual({ phase: "done" })
+    expect(viewExecSubtools(result.metadata)[0]?.state.status).toBe("completed")
+  })
+
+  test("does not persist a running nested part when exec terminates early", async () => {
+    const slow = fakeDef("slow", async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      return "late"
+    })
+    const boom = fakeDef("boom", async () => {
+      throw new Error("kapow")
+    })
+    const result = await runToolScript(
+      `await Promise.all([tools.slow({}), tools.boom({})]); return "unreachable"`,
+      [slow, boom],
+    )
+    const parts = viewExecSubtools(result.metadata)
+    expect(result.metadata.status).toBe("code_error")
+    expect(parts).toHaveLength(2)
+    expect(parts.every((part) => part.state.status !== "running")).toBe(true)
+  })
+
   test("accepts TypeScript syntax (types stripped by transpiler)", async () => {
     const result = await runToolScript(
       `
@@ -251,6 +436,27 @@ describe("exec", () => {
     expect(result.output).toContain("→ error")
   })
 
+  test("nested recoverable failures retain the live title and muted marker", async () => {
+    const def: Tool.Def = {
+      id: "recoverable",
+      description: "fake recoverable tool",
+      parameters: z.object({}),
+      execute: (_args, ctx) =>
+        Effect.gen(function* () {
+          yield* ctx.metadata({ title: "Checking target" })
+          return yield* Effect.die(new RecoverableError("target missing"))
+        }),
+    }
+    const result = await runToolScript(`try { await tools.recoverable({}) } catch {}`, [def])
+    expect(viewExecSubtools(result.metadata)[0]).toMatchObject({
+      state: {
+        status: "error",
+        title: "Checking target",
+        metadata: { recoverable: true },
+      },
+    })
+  })
+
   test("call budget exceeded → budget_exceeded status", async () => {
     const defs = [fakeDef("ping", async () => "pong")]
     const result = await runToolScript(
@@ -276,6 +482,7 @@ describe("exec", () => {
     )
     expect(result.metadata.status).toBe("completed")
     expect(result.metadata.toolCalls).toBe(60)
+    expect((result.metadata.sub_parts as ExecSubPartSnapshot[]).length).toBe(60)
   })
 
   test("max_tool_calls lowers the call budget and the error names the limit", async () => {
@@ -305,6 +512,42 @@ describe("exec", () => {
     expect(result.metadata.status).toBe("code_error")
   })
 
+  test("strips leaked parameter wrappers from custom exec source", async () => {
+    const wrapped = await runToolScript(`<parameter name="code">\nreturn { repaired: true }\n</parameter> ###`, [])
+    const trailing = await runToolScript(`return "trailing repaired"</paramter>`, [])
+    const repeated = await runToolScript(
+      `const results = [{ output: "first" }, { output: "second" }];
+return results.map((r, i) => \`RESULT \${i + 1}\\n\${r.output}\`).join("\\n---\\n");
+</parameter></parameter>`,
+      [],
+    )
+
+    expect(wrapped.metadata.status).toBe("completed")
+    expect(wrapped.output).toContain('"repaired": true')
+    expect(trailing.metadata.status).toBe("completed")
+    expect(trailing.output).toContain("trailing repaired")
+    expect(repeated.metadata.status).toBe("completed")
+    expect(repeated.output).toContain("RESULT 2\nsecond")
+  })
+
+  test("does not strip parameter-like text inside JavaScript strings", async () => {
+    const result = await runToolScript(`return "</parameter> ###"`, [])
+
+    expect(result.metadata.status).toBe("completed")
+    expect(result.output).toContain("</parameter> ###")
+  })
+
+  test("strips a leaked opening angle bracket before a variable declaration", async () => {
+    const result = await runToolScript(
+      `<const r = { output: "found data-quality-platform" };
+return r.output;`,
+      [],
+    )
+
+    expect(result.metadata.status).toBe("completed")
+    expect(result.output).toContain("found data-quality-platform")
+  })
+
   test("pre-aborted signal cancels the execution", async () => {
     // A sync spin blocks the host event loop, so a timer-armed abort can never
     // fire mid-spin (the 60s active budget covers that in production). An
@@ -332,10 +575,11 @@ describe("exec", () => {
   })
 
   test("exec_command maps to bash while direct bash remains backward compatible", async () => {
-    const seen: Array<{ command: string; timeout: number; description: string }> = []
+    const seen: Array<{ command: string; timeout: number; max_output_tokens?: number; description: string }> = []
     const parameters = z.object({
       command: z.string(),
       timeout: z.number(),
+      max_output_tokens: z.number().optional(),
       workdir: z.string().optional(),
       description: z.string(),
     })
@@ -344,14 +588,19 @@ describe("exec", () => {
       description: "fake bash",
       parameters,
       execute: (args) => {
-        seen.push({ command: args.command, timeout: args.timeout, description: args.description })
+        seen.push({
+          command: args.command,
+          timeout: args.timeout,
+          max_output_tokens: args.max_output_tokens,
+          description: args.description,
+        })
         return Effect.succeed({ title: args.description, output: `ran:${args.command}`, metadata: {} })
       },
     }
     const result = await runToolScript(
       `return await Promise.all([
         tools.bash({ command: "direct", timeout: 25000, description: "direct bash" }),
-        tools.exec_command({ cmd: "alias", yield_time_ms: 15000 }),
+        tools.exec_command({ cmd: "alias", yield_time_ms: 15000, max_output_tokens: 25000 }),
       ])`,
       [bash],
     )
@@ -360,15 +609,16 @@ describe("exec", () => {
     expect(result.output).toContain("ran:direct")
     expect(result.output).toContain("ran:alias")
     expect(seen).toEqual(expect.arrayContaining([
-      { command: "direct", timeout: 25000, description: "direct bash" },
-      { command: "alias", timeout: 15000, description: "alias" },
+      { command: "direct", timeout: 25000, max_output_tokens: undefined, description: "direct bash" },
+      { command: "alias", timeout: 15000, max_output_tokens: 25000, description: "alias" },
     ]))
   })
 
-  test("exec_command defaults yield_time_ms to 10000 ms", async () => {
+  test("exec_command defaults yield_time_ms and max_output_tokens to 10000", async () => {
     const parameters = z.object({
       command: z.string(),
       timeout: z.number(),
+      max_output_tokens: z.number(),
       workdir: z.string().optional(),
       description: z.string(),
     })
@@ -377,12 +627,43 @@ describe("exec", () => {
       description: "fake bash",
       parameters,
       execute: (args) =>
-        Effect.succeed({ title: args.description, output: String(args.timeout), metadata: {} }),
+        Effect.succeed({
+          title: args.description,
+          output: `${args.timeout}:${args.max_output_tokens}`,
+          metadata: {},
+        }),
     }
     const result = await runToolScript(`return await tools.exec_command({ cmd: "echo ok" })`, [bash])
 
     expect(result.metadata.status).toBe("completed")
-    expect(result.output).toContain('"output": "10000"')
+    expect(result.output).toContain('"output": "10000:10000"')
+  })
+
+  test("exec_command repairs unambiguous parameter spelling mistakes", async () => {
+    const seen: Array<{ workdir?: string; timeout: number }> = []
+    const parameters = z.object({
+      command: z.string(),
+      timeout: z.number(),
+      max_output_tokens: z.number(),
+      workdir: z.string().optional(),
+      description: z.string(),
+    })
+    const bash: Tool.Def<typeof parameters> = {
+      id: "bash",
+      description: "fake bash",
+      parameters,
+      execute: (args) => {
+        seen.push({ workdir: args.workdir, timeout: args.timeout })
+        return Effect.succeed({ title: args.description, output: "ok", metadata: {} })
+      },
+    }
+    const result = await runToolScript(
+      `return await tools.exec_command({ cmd: "pwd", workdiir: "/tmp", yieldTimeMs: 1234 })`,
+      [bash],
+    )
+
+    expect(result.metadata.status).toBe("completed")
+    expect(seen).toEqual([{ workdir: "/tmp", timeout: 1234 }])
   })
 
   test("lists exec_command instead of bash in the code-mode catalog", async () => {
@@ -657,6 +938,26 @@ describe("exec", () => {
     expect(result.metadata.status).toBe("completed")
     expect(result.output).toContain("navigated: https://example.com")
   })
+
+  test("sets fromExec flag in subCtx so downstream tools can detect exec origin", async () => {
+    let capturedExtra: Record<string, unknown> | undefined
+    const probeDef: Tool.Def = {
+      id: "probe",
+      description: "fake probe",
+      parameters: z.object({}),
+      execute: (_args: any, ctx: any) => {
+        capturedExtra = ctx.extra
+        return Effect.succeed({ title: "probe", output: "ok", metadata: {} })
+      },
+    }
+    const result = await runToolScript(
+      `return await tools.probe({})`,
+      [probeDef],
+    )
+    expect(result.metadata.status).toBe("completed")
+    expect(capturedExtra).toBeDefined()
+    expect(capturedExtra!.fromExec).toBe(true)
+  })
 })
 
 describe("renderToolScriptDeclarations", () => {
@@ -681,7 +982,7 @@ describe("renderToolScriptDeclarations", () => {
     for (const id of ["exec", "mcp_tool_search", "invalid", "session", "workflow"]) {
       expect(TOOL_SCRIPT_EXCLUDED.has(id)).toBe(true)
     }
-    for (const id of ["bash", "task", "question", "actor", "skill", "plan_exit", "cron", "change_directory"]) {
+    for (const id of ["bash", "task", "question", "actor", "skill", "plan_exit", "cron"]) {
       expect(TOOL_SCRIPT_EXCLUDED.has(id)).toBe(false)
     }
   })
@@ -692,11 +993,12 @@ describe("renderToolScriptDeclarations", () => {
     expect(text).toContain("Alias for bash")
     expect(text).toContain("cmd: string")
     expect(text).toContain("yield_time_ms?: number")
+    expect(text).toContain("max_output_tokens?: number")
     expect(text).not.toContain("command: string")
     expect(text).not.toContain("timeout?: number")
     expect(text).not.toContain("interactive?: boolean")
     const declaration = text.split("\n").find((line) => line.includes("exec_command(input:"))
-    expect(declaration).not.toContain("description:")
+    expect(declaration).toContain("description?: string")
     expect(text).not.toContain("\n  bash(input:")
   })
 
@@ -731,6 +1033,29 @@ describe("exec MCP dispatch", () => {
     expect(result.metadata.status).toBe("completed")
     expect(result.output).toContain("found: hello")
   })
+
+  test("MCP aliases dispatch to the registered catalog tool", async () => {
+    const seen: string[] = []
+    const mcp = {
+      "feishu-mcp-pro_doc_read": fakeMcpTool(async (args) => {
+        seen.push(args.document_id)
+        return { output: "read: " + args.document_id, metadata: {}, attachments: [] }
+      }),
+    }
+    const result = await runToolScript(
+      `const dashed = await tools["mcp__feishu-mcp-pro__doc_read"]({ document_id: "dash" });
+       const underscored = await tools["mcp__feishu_mcp_pro__doc_read"]({ document_id: "underscore" });
+       return [dashed.output, underscored.output]`,
+      [],
+      undefined,
+      { mcp },
+    )
+
+    expect(result.metadata.status).toBe("completed")
+    expect(result.output).toContain("read: dash")
+    expect(result.output).toContain("read: underscore")
+    expect(seen).toEqual(["dash", "underscore"])
+  }, 15_000)
 
   test("structuredContent crosses into the guest as parsed `structured`", async () => {
     const mcp = {
@@ -787,7 +1112,7 @@ describe("exec MCP dispatch", () => {
       srv_img: fakeMcpTool(async () => ({
         output: "here is your chart",
         metadata: { mcp: { isError: false } },
-        attachments: [{ mime: "image/png", url: "data:image/png;base64,xxxx" }],
+        attachments: [{ type: "file", mime: "image/png", url: "data:image/png;base64,xxxx" }],
       })),
     }
     const result = await runToolScript(
@@ -798,6 +1123,9 @@ describe("exec MCP dispatch", () => {
     )
     expect(result.output).toContain("here is your chart")
     expect(result.output).toContain("non-text attachment(s) dropped")
+    expect(viewExecSubtools(result.metadata)[0]?.state.attachments).toEqual([
+      { type: "file", mime: "image/png", url: "data:image/png;base64,xxxx" },
+    ])
   })
 
   test("MCP calls count against the tool call budget", async () => {

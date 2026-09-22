@@ -196,7 +196,7 @@ The `/goal` command sets a stopping condition for a session. When the agent trie
 
 Compose is MiMoCode's structured workflow for specs-driven development, orchestrating the full lifecycle from spec to shipped code.
 
-The recommended way to use it is the **`/compose-next`** skill on the **build** agent: a single self-contained contract covering grill → spec → workspace → implement → verify → review → finalize → finish, with feature documents at `docs/compose/spec/<feature>.md`. It is designed for frontier models (Fable/Sol-class), which internalize most of the workflow and work best from one compact contract.
+The recommended way to use it is the **`/compose-next`** skill on the **build** agent: a single self-contained contract covering grill → workspace → spec → implement → verify → review → finalize → finish, with feature documents at `docs/compose/spec/<feature>.md` under the workspace root. It is designed for frontier models (Fable/Sol-class), which internalize most of the workflow and work best from one compact contract.
 
 The legacy path is the dedicated **compose agent** (switch with `Tab`), which orchestrates fourteen built-in skills for planning, execution, code review, TDD, debugging, verification, and merging — a step-by-step curriculum that remains useful for weaker models.
 
@@ -233,7 +233,6 @@ MiMoCode bundles the following builtin skills:
 | `deep-research` | Produce cited, multi-source research reports with parallel subagents and built-in web tools |
 | `design-blueprint` | Produce a design blueprint (DESIGN.md + Decision Trace) before mocking up visuals |
 | `docx-official` | Produce, read, and transform Word (.docx) files |
-| `drive-mimo` | Script, test, and automate another MiMoCode process in headless or interactive TUI mode |
 | `evolve` | Total self-modification — rewrite any layer of the agent: tools, behavior hooks, knowledge, workflows, even the UI |
 | `frontend-design` | Visual design guidance for UI work |
 | `html-to-video-pipeline` | HTML-to-MP4 rendering via headless browser + ffmpeg |

@@ -187,7 +187,7 @@ mimo attach http://127.0.0.1:4096
 
 Compose 是 MiMoCode 的 specs-driven 结构化开发流程，编排从 spec 到交付的完整开发生命周期。
 
-推荐用法是在 **build** agent 中使用 **`/compose-next`** 技能：一份独立完整的契约，覆盖 grill → spec → workspace → implement → verify → review → finalize → finish，功能文档落在 `docs/compose/spec/<feature>.md`。它面向前沿模型（Fable/Sol 级）设计——这类模型已内化大部分流程，用一份紧凑契约效果最好。
+推荐用法是在 **build** agent 中使用 **`/compose-next`** 技能：一份独立完整的契约，覆盖 grill → workspace → spec → implement → verify → review → finalize → finish，功能文档落在 workspace root 下的 `docs/compose/spec/<feature>.md`。它面向前沿模型（Fable/Sol 级）设计——这类模型已内化大部分流程，用一份紧凑契约效果最好。
 
 Legacy 路径是专用的 **compose agent**（按 `Tab` 切换），它编排规划、执行、代码审查、TDD、调试、验证、合并等十四个内置技能——这套分步技能课程对较弱模型依然适用。
 
@@ -224,7 +224,6 @@ MiMoCode 打包了以下内置技能：
 | `deep-research` | 使用并行子智能体和内置 Web 工具生成带引用的多源深度调研报告 |
 | `design-blueprint` | 动手做视觉前先出设计蓝图（DESIGN.md + 决策轨迹）|
 | `docx-official` | 生成、读取和转换 Word (.docx) 文件 |
-| `drive-mimo` | 以无头或交互式 TUI 模式编排、测试和自动化另一个 MiMoCode 进程 |
 | `evolve` | 全面自我修改——改写 Agent 的任意层面：工具、行为钩子、知识、工作流，乃至界面本身 |
 | `frontend-design` | UI 开发的视觉设计指导 |
 | `html-to-video-pipeline` | 通过无头浏览器 + ffmpeg 将 HTML 渲染为 MP4 |

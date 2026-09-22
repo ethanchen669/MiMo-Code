@@ -151,9 +151,9 @@ const issue = cmd({
         label: args.label,
       })
 
-      // Resolved rather than guessed: a mimocode process serving this project advertises
-      // its loopback address, so the two halves of "where" and "with what" can finally be
-      // printed together. Absent when nothing is serving this directory right now.
+      // Resolved rather than guessed: a mimocode process serving THIS directory advertises
+      // its loopback address. Cross-host fallback was removed — those URLs 401 under
+      // OpenAI-standard clients (no `?directory=`), so a null base_url is honest.
       const address = await LLMServerTokens.address(process.cwd())
 
       if (args.json) {
@@ -223,8 +223,8 @@ const list = cmd({
   handler: (args) =>
     inInstance(async () => {
       const tokens = await LLMServerTokens.list(process.cwd())
-      // All of them, not just one: several sessions can be open on the same project, and
-      // "which port do I use" is exactly the question this command is asked.
+      // Only listeners pinned to this directory. A multi-project host's own address
+      // verifies tokens against its cwd, so advertising it here would 401.
       const servers = await LLMServerTokens.addresses(process.cwd())
       if (args.json) {
         process.stdout.write(JSON.stringify({ servers, server: servers[0] ?? null, tokens }) + "\n")

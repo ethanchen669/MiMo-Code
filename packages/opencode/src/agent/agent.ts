@@ -195,7 +195,7 @@ export const layer = Layer.effect(
             // wins. (Every write tool — write/edit/multiedit/apply_patch/
             // notebook_edit — funnels through ctx.ask({ permission: "edit" }),
             // so this single rule governs all file writes.) Deliberately scoped
-            // to edit only: bash/change_directory/workflow are left to the
+            // to edit only: bash/workflow are left to the
             // model's own read-only discipline + plan prompt, matching the
             // project's "trust the model, permission layer is a backstop"
             // stance. The "*":"deny" carries a non-"*" allow exception, so the
@@ -349,11 +349,13 @@ export const layer = Layer.effect(
             options: {},
             native: true,
             hidden: true,
+            modelRef: "lite",
             temperature: 0.5,
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
                 "*": "deny",
+                StructuredOutput: "allow",
               }),
               user,
             ),
@@ -618,7 +620,10 @@ export const layer = Layer.effect(
           ? Option.getOrUndefined(yield* Effect.serviceOption(OtelTracer.OtelTracer))
           : undefined
 
-        const system = [PROMPT_GENERATE, ...(usesGPTToolset(resolved.id) ? [PROMPT_GENERATE_GPT] : [])]
+        const system = [
+          PROMPT_GENERATE,
+          ...(usesGPTToolset(resolved.id, undefined, resolved.api.id, resolved.family) ? [PROMPT_GENERATE_GPT] : []),
+        ]
         yield* plugin.trigger("experimental.chat.system.transform", { model: resolved }, { system })
         const existing = yield* InstanceState.useEffect(state, (s) => s.list())
 
