@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # sync-analyze.sh — Pre-sync four-layer analysis (SYNC-SOP)
-# Usage: sync-analyze.sh [--no-fetch] [--report <path>]
+# Usage: sync-analyze.sh [--no-fetch] [--report <path>] [--main] [--release <tag>]
 #
 # Generates the pre-merge analysis report required by docs/SYNC-SOP.md:
 #   A. upstream change inventory     B. code-conflict preview (merge-tree, zero side effects)
@@ -8,6 +8,9 @@
 #   + BUILD-DEPLOY-RELEASE-SOP §9.1 regression re-checks (current tree)
 #
 # READ-ONLY by design: fetches (unless --no-fetch), never merges/builds/deploys.
+#
+# Sync baseline: default = latest upstream release tag (v0.1.x, release-verified);
+#   --main falls back to upstream/main (unreleased changes); --release pins a tag.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,14 +18,20 @@ source "$SCRIPT_DIR/../lib/common.sh"
 
 NO_FETCH=false
 REPORT=""
+BASELINE="release"   # release | main | pinned
+PINNED_TAG=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-fetch)        NO_FETCH=true ;;
     --report)          REPORT="$2"; shift ;;
+    --main)            BASELINE="main" ;;
+    --release)         BASELINE="pinned"; PINNED_TAG="$2"; shift ;;
     -h|--help)
-      echo "Usage: sync-analyze.sh [--no-fetch] [--report <path>]"
+      echo "Usage: sync-analyze.sh [--no-fetch] [--report <path>] [--main] [--release <tag>]"
       echo "  --no-fetch   skip git fetch upstream (use existing refs)"
       echo "  --report     output report path (default: \$MIMOCODE_LOGS/sync-analysis-<ts>.md)"
+      echo "  --main       analyze against upstream/main instead of latest release tag"
+      echo "  --release    analyze against a pinned upstream tag (e.g. v0.1.13)"
       exit 0 ;;
     *) mimo_error "unknown arg: $1"; exit 2 ;;
   esac
@@ -32,14 +41,24 @@ done
 mimo_preflight || exit 1
 
 cd "$MIMOCODE_REPO"
-UPSTREAM_REF="upstream/main"
-LOCAL_SHA="$(git rev-parse HEAD)"
-BASE_SHA="$(git merge-base HEAD "$UPSTREAM_REF" 2>/dev/null || echo "")"
 
 if [[ "$NO_FETCH" != "true" ]]; then
-  mimo_info "fetching upstream"
-  git fetch upstream --quiet || { mimo_error "git fetch failed"; exit 1; }
+  mimo_info "fetching upstream (incl. tags)"
+  git fetch upstream --quiet --tags || { mimo_error "git fetch failed"; exit 1; }
 fi
+
+# Resolve baseline ref
+case "$BASELINE" in
+  main)    UPSTREAM_REF="upstream/main" ;;
+  pinned)  UPSTREAM_REF="refs/tags/$PINNED_TAG" ;;
+  release) UPSTREAM_TAG="$(git tag --list 'v*' --sort=-v:refname | head -1)"
+           [[ -z "$UPSTREAM_TAG" ]] && { mimo_error "no upstream release tags found"; exit 1; }
+           UPSTREAM_REF="refs/tags/$UPSTREAM_TAG"
+           mimo_info "baseline: latest release tag $UPSTREAM_TAG" ;;
+esac
+
+LOCAL_SHA="$(git rev-parse HEAD)"
+BASE_SHA="$(git merge-base HEAD "$UPSTREAM_REF" 2>/dev/null || echo "")"
 
 if ! git rev-parse --verify "$UPSTREAM_REF" >/dev/null 2>&1; then
   mimo_error "no upstream ref: $UPSTREAM_REF (run without --no-fetch first)"
@@ -50,7 +69,7 @@ REMOTE_SHA="$(git rev-parse "$UPSTREAM_REF")"
 BASE_SHA="$(git merge-base HEAD "$UPSTREAM_REF")"
 BEHIND="$(git rev-list --count "$LOCAL_SHA..$UPSTREAM_REF")"
 AHEAD="$(git rev-list --count "$UPSTREAM_REF..$LOCAL_SHA")"
-[[ "$BEHIND" -eq 0 ]] && { mimo_info "already up-to-date with upstream ($LOCAL_SHA)"; exit 0; }
+[[ "$BEHIND" -eq 0 ]] && { mimo_info "already up-to-date with $UPSTREAM_REF ($LOCAL_SHA)"; exit 0; }
 
 REPORT="${REPORT:-$MIMOCODE_LOGS/sync-analysis-$(mimo_ts).md}"
 mkdir -p "$(dirname "$REPORT")"
@@ -91,7 +110,7 @@ UPSTREAM_CHANGED="$(git diff --name-only "$BASE_SHA...$UPSTREAM_REF" 2>/dev/null
   echo ""
   echo "Local:  $LOCAL_SHA ($(git rev-parse --abbrev-ref HEAD))"
   echo "Base:   $BASE_SHA"
-  echo "Upstream: $UPSTREAM_REF = $REMOTE_SHA"
+  echo "Upstream: $UPSTREAM_REF = ${REMOTE_SHA}（baseline: $BASELINE${UPSTREAM_TAG:+ = $UPSTREAM_TAG}）"
   echo "Behind: $BEHIND commits | Ahead: $AHEAD commits"
   echo ""
 
