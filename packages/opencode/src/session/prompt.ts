@@ -516,6 +516,8 @@ export const layer = Layer.effect(
               ])
               return [
                 ...env,
+                ...(ag.name === "build" ? [PROMPT_BUILD] : []),
+                ...(ag.name === "security" ? [PROMPT_SECURITY] : []),
                 ...(skills ? [skills] : []),
                 ...(Flag.MIMOCODE_DISABLE_INSTRUCTIONS ? [] : instructions.content),
               ]
@@ -1178,50 +1180,6 @@ export const layer = Layer.effect(
           text,
           synthetic: true,
         })
-      }
-
-      // Security mode: inject security prompt when agent is "security"
-      if (input.agent.name === "security") {
-        const userMsg = input.messages.findLast((msg) => msg.info.role === "user")
-        if (userMsg) {
-          const existingParts = userMsg.parts
-          const hasSecurityPrompt = existingParts.some(
-            (p) => p.type === "text" && typeof p.text === "string" && p.text.includes("Security Analysis Agent")
-          )
-          if (!hasSecurityPrompt) {
-            const securityPart = {
-              id: PartID.ascending(),
-              messageID: userMsg.info.id,
-              sessionID: userMsg.info.sessionID,
-              type: "text" as const,
-              text: PROMPT_SECURITY,
-              synthetic: true,
-            }
-            existingParts.unshift(securityPart)
-          }
-        }
-      }
-
-      // Build mode: inject build prompt when agent is "build"
-      if (input.agent.name === "build") {
-        const userMsg = input.messages.findLast((msg) => msg.info.role === "user")
-        if (userMsg) {
-          const existingParts = userMsg.parts
-          const hasBuildPrompt = existingParts.some(
-            (p) => p.type === "text" && typeof p.text === "string" && p.text.includes("Build Agent")
-          )
-          if (!hasBuildPrompt) {
-            const buildPart = {
-              id: PartID.ascending(),
-              messageID: userMsg.info.id,
-              sessionID: userMsg.info.sessionID,
-              type: "text" as const,
-              text: PROMPT_BUILD,
-              synthetic: true,
-            }
-            existingParts.unshift(buildPart)
-          }
-        }
       }
 
       // Auto-worktree notice: once per session, after a completed write or git
@@ -2010,6 +1968,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       }
 
       if (
+        !useGPTTools &&
         useMcpToolSearch &&
         input.model.capabilities.toolcall &&
         mcpCatalog.current.entries.length > 0 &&
@@ -2017,7 +1976,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       ) {
         activeTools.add(MCP_TOOL_SEARCH_ID)
       }
-      loadedMcpTools.forEach((name) => activeTools.add(name))
+      if (!useGPTTools) loadedMcpTools.forEach((name) => activeTools.add(name))
 
       // MCP Tool Search keeps full schemas out of the outer model tool list;
       // it is a context-budget optimization, not an authorization boundary.
@@ -4530,6 +4489,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               return [
                 ...env,
                 ...(format.type === "json_schema" ? [STRUCTURED_OUTPUT_SYSTEM_PROMPT] : []),
+                ...(agent.name === "build" ? [PROMPT_BUILD] : []),
+                ...(agent.name === "security" ? [PROMPT_SECURITY] : []),
                 ...(skills ? [skills] : []),
                 ...(Flag.MIMOCODE_DISABLE_INSTRUCTIONS ? [] : instructions.content),
               ]
