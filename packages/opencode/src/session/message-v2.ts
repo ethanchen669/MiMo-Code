@@ -647,6 +647,12 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
 
+  // Model outputs are not guaranteed to be plain objects (e.g. a bare JSON number
+  // like `4` slips through when a provider emits malformed tool args). Gateways
+  // such as the xiaomi proxy reject non-object `arguments`, so normalize on replay.
+  const asToolInput = (input: unknown) =>
+    input !== null && typeof input === "object" && !Array.isArray(input) ? input : {}
+
   const toModelOutput = (options: { toolCallId: string; input: unknown; output: unknown }) => {
     const output = options.output
     if (typeof output === "string") {
@@ -849,7 +855,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
               type: ("tool-" + part.tool) as `tool-${string}`,
               state: "output-available",
               toolCallId: part.callID,
-              input: part.state.input,
+              input: asToolInput(part.state.input),
               output,
               ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
               ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
@@ -871,7 +877,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
                 type: ("tool-" + part.tool) as `tool-${string}`,
                 state: "output-available",
                 toolCallId: part.callID,
-                input: part.state.input,
+                input: asToolInput(part.state.input),
                 output,
                 ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
                 ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
@@ -881,7 +887,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
                 type: ("tool-" + part.tool) as `tool-${string}`,
                 state: "output-error",
                 toolCallId: part.callID,
-                input: part.state.input,
+                input: asToolInput(part.state.input),
                 errorText: part.state.error,
                 ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
                 ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),
@@ -895,7 +901,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
               type: ("tool-" + part.tool) as `tool-${string}`,
               state: "output-error",
               toolCallId: part.callID,
-              input: part.state.input,
+              input: asToolInput(part.state.input),
               errorText: "[Tool execution was interrupted]",
               ...(part.metadata?.providerExecuted ? { providerExecuted: true } : {}),
               ...(differentModel ? {} : { callProviderMetadata: providerMeta(part.metadata) }),

@@ -1309,6 +1309,69 @@ describe("session.message-v2.toModelMessage", () => {
       },
     ])
   })
+
+  test("normalizes non-object tool inputs on replay (malformed model output)", async () => {
+    // A provider can emit tool args that parse to a bare JSON number (e.g. `4`);
+    // strict gateways reject non-object `arguments`, so replay must normalize.
+    const userID = "m-badinput-user"
+    const assistantID = "m-badinput-assistant"
+    const input: MessageV2.WithParts[] = [
+      {
+        info: userInfo(userID),
+        parts: [{ ...basePart(userID, "u1"), type: "text", text: "run tool" }],
+      },
+      {
+        info: assistantInfo(assistantID, userID),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "tool",
+            callID: "call-num",
+            tool: "actor",
+            state: {
+              status: "error",
+              input: 4,
+              error: "Invalid arguments for the actor tool: expected object, received number",
+              time: { start: 0, end: 1 },
+              metadata: {},
+            },
+          },
+          {
+            ...basePart(assistantID, "a2"),
+            type: "tool",
+            callID: "call-str",
+            tool: "actor",
+            state: {
+              status: "error",
+              input: "oops",
+              error: "Invalid arguments for the actor tool",
+              time: { start: 0, end: 1 },
+              metadata: {},
+            },
+          },
+          {
+            ...basePart(assistantID, "a3"),
+            type: "tool",
+            callID: "call-ok",
+            tool: "actor",
+            state: {
+              status: "completed",
+              input: { task: "ok" },
+              output: "done",
+              title: "",
+              metadata: {},
+              time: { start: 0, end: 1 },
+            },
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    const messages = await MessageV2.toModelMessages(input, model)
+    const content = messages[1]!.content
+    const toolCalls = (Array.isArray(content) ? content : []).filter((c) => c.type === "tool-call")
+    expect(toolCalls.map((c) => (c as { input: unknown }).input)).toEqual([{}, {}, { task: "ok" }])
+  })
 })
 
 describe("session.message-v2.fromError", () => {
