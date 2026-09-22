@@ -13,6 +13,12 @@ export function isMcpToolSearchEnabled(enabled: boolean, ...modelIDs: Array<stri
 export function usesMimoCodexMode(...values: Array<string | undefined>) {
   const ids = values.flatMap((value) => (value ? [value.toLowerCase()] : []))
   if (ids.some((id) => /(?:^|[/])mimo-v2\.5(?:-pro)?$/.test(id))) return false
+  // mimo-x (preview) families degrade under the Codex toolset: given the long
+  // `exec` script-orchestration description they emit the call as plain text or
+  // empty `{}` arguments instead of a structured function call. They handle the
+  // standard toolset (bash/read/write/...) correctly over the Responses API, so
+  // keep them off Codex mode.
+  if (ids.some((id) => /(?:^|[/_-])mimo-x(?:$|[/_.-])/.test(id))) return false
   return ids.some((id) => /(?:^|[/_-])mimo(?:$|[/_.-])/.test(id))
 }
 

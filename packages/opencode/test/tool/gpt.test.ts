@@ -51,6 +51,12 @@ describe("usesGPTToolset", () => {
     expect(usesGPTToolset("mimo-v2.6")).toBe(true)
   })
 
+  test("uses the normal toolset for mimo-x preview models", () => {
+    expect(usesGPTToolset("xiaomi/mimo-x-pro-preview")).toBe(false)
+    expect(usesGPTToolset("xiaomi/mimo-x-flash-preview")).toBe(false)
+    expect(isMcpToolSearchEnabled(false, "xiaomi/mimo-x-pro-preview")).toBe(false)
+  })
+
   test("uses the GPT toolset for every model in Codex mode", () => {
     expect(usesGPTToolset("claude-opus-4-6")).toBe(false)
     process.env.MIMOCODE_CODEX_MODE = "true"
