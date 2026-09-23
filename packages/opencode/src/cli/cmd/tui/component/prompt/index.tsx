@@ -65,6 +65,7 @@ export type PromptProps = {
   visible?: boolean
   disabled?: boolean
   onSubmit?: () => void
+  onPage?: (direction: "up" | "down") => void
   ref?: (ref: PromptRef | undefined) => void
   hint?: JSX.Element
   right?: JSX.Element
@@ -1718,6 +1719,25 @@ export function Prompt(props: PromptProps) {
                 if (props.disabled) {
                   e.preventDefault()
                   return
+                }
+                // Page up/down are handled at the renderable layer instead of
+                // relying on the global keybinds: while a ghost suggestion is
+                // showing, the global keybind chain is suspended (so Tab can
+                // reach the textarea to accept the suggestion), which would
+                // otherwise swallow the page keys as well. Renderable handlers
+                // run after global ones and skip already-prevented events, so
+                // this never double-fires.
+                if (props.onPage) {
+                  if (keybind.match("messages_page_up", e)) {
+                    props.onPage("up")
+                    e.preventDefault()
+                    return
+                  }
+                  if (keybind.match("messages_page_down", e)) {
+                    props.onPage("down")
+                    e.preventDefault()
+                    return
+                  }
                 }
                 // Handle Ctrl+V for terminals that forward it to the app as a raw
                 // keypress (common on macOS/Linux). The textarea has no built-in

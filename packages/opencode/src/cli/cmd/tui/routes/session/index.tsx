@@ -1545,6 +1545,7 @@ export function Session() {
                     onSubmit={() => {
                       toBottom()
                     }}
+                    onPage={(direction) => scroll.scrollBy(direction === "up" ? -scroll.height : scroll.height)}
                     sessionID={route.sessionID}
                     right={<TuiPluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
                   />

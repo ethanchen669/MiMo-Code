@@ -743,6 +743,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         : t("tui.command.skip_permissions.title_off"),
       value: "permission.skip_all.toggle",
       category: "agent",
+      keybind: "skip_permissions_toggle",
       slash: {
         name: "skip-permissions",
       },

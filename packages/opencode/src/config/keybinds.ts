@@ -63,6 +63,7 @@ const KeybindsSchema = Schema.Struct({
   agent_force: keybind("<leader>o", "Force switch mode (bypass mid-session lock)"),
   agent_cycle: keybind("tab", "Next agent"),
   agent_cycle_reverse: keybind("shift+tab", "Previous agent"),
+  skip_permissions_toggle: keybind("f3", "Toggle skip-permissions (auto mode)"),
   variant_cycle: keybind("ctrl+t", "Cycle model variants"),
   variant_list: keybind("none", "List model variants"),
   input_clear: keybind("ctrl+c", "Clear input field"),
